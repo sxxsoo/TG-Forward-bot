@@ -1,0 +1,73 @@
+name: Sync
+
+on:
+  workflow_dispatch:      # 支持手动运行
+  schedule:
+    - cron: '0 3 * * *'   # 每天 UTC 时间 03:00 运行，可修改
+
+permissions:
+  contents: write         
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    env:
+      UPSTREAM_REPO: https://github.com/sxxsoo/TG-Forward-bot.git
+      TARGET_BRANCH: ${{ github.event.repository.default_branch }}
+
+    steps:
+      - name: Checkout fork repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Configure Git
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Add upstream and fetch
+        run: |
+          git remote add upstream $UPSTREAM_REPO || true
+          git fetch upstream --no-tags --prune
+
+      - name: Merge upstream changes
+        run: |
+          git checkout $TARGET_BRANCH
+          git merge upstream/$TARGET_BRANCH --no-edit || git merge upstream/$TARGET_BRANCH --allow-unrelated-histories --no-edit || true
+          git status --porcelain || true
+
+      - name: Try to push changes
+        id: try_push
+        run: |
+          set -e
+          if git diff --quiet; then
+            echo "no_changes=true" >> $GITHUB_OUTPUT
+            echo "No changes to push."
+            exit 0
+          fi
+
+          if git push origin $TARGET_BRANCH; then
+            echo "pushed=true" >> $GITHUB_OUTPUT
+            echo "Successfully pushed to $TARGET_BRANCH."
+            exit 0
+          else
+            echo "pushed=false" >> $GITHUB_OUTPUT
+            echo "Direct push failed, will create PR."
+            exit 0
+          fi
+
+      - name: Create Pull Request if push failed
+        if: steps.try_push.outputs.pushed == 'false'
+        uses: peter-evans/create-pull-request@v5
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "Sync from upstream sxxsoo/TG-Forward-bot"
+          title: "Sync: update from upstream"
+          body: |
+            This PR merges the latest changes from upstream repository:
+            **sxxsoo/TG-Forward-bot**
+
+            If everything looks good, please merge this PR.
+          base: ${{ env.TARGET_BRANCH }}
+          head: sync-upstream-${{ github.run_id }
