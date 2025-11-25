@@ -85,11 +85,12 @@ chmod +x bot_manager.sh
 
 Edit the following variables:
 
-Variable Name	Description	Example
-BOT_TOKEN	From @BotFather	123456:ABC-DEF1234ghIkl
-ADMIN_USER_ID	Admin Telegram user ID	123456789
-GROUP_CHAT_ID	Target group chat ID	-100123456789
-REQUIRED_CHANNELS	Channels users must join before using bot (optional)	@channel1,-100123456789
+| **Variable Name** | **Description** | **Example** |
+|-----------------------------|------------|--------------------------------------------------------------------------|
+| `BOT_TOKEN` | From @BotFather | `123456:ABC-DEF1234ghIkl` |
+| `ADMIN_USER_ID` | Admin user ID | `123456789` |
+| `GROUP_CHAT_ID` | Target group chat ID | `-100123456789` |
+| `REQUIRED_CHANNELS` | Channels users must join before using the bot (optional): channel-group binding; users who haven’t joined cannot use the bot | `@channel1,-100123456789` |
 
 **4. After configuration, select option 1 to install the bot**
 
