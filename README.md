@@ -1,6 +1,7 @@
-# [English](./README_EN.md)
-
 # Tgbot消息转发🤖️
+
+
+**[English](./README_EN.md)**
 
 
 注意：支持Debian/Ubuntu系统
