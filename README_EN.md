@@ -85,6 +85,16 @@ chmod +x bot_manager.sh
 
 Edit the following variables:
 
+	•	BOT_TOKEN: Your bot token
+
+	•	ADMIN_USER_ID: Your user ID
+
+	•	GROUP_CHAT_ID: Target group ID
+
+	•	REQUIRED_CHANNELS: Channel binding ID/username (optional)
+
+
+
 | **Variable Name** | **Description** | **Example** |
 |-----------------------------|------------|--------------------------------------------------------------------------|
 | `BOT_TOKEN` | From @BotFather | `123456:ABC-DEF1234ghIkl` |
@@ -99,12 +109,26 @@ Edit the following variables:
 
 Supported Media Types
 
+
 · ✅ Text messages
+
+
 · ✅ Photos / Images
+
+
 · ✅ Videos
+
+
 · ✅ Files / Documents
+
+
 · ✅ Voice messages
+
+
 · ✅ Stickers
+
+
 · ✅ Audio files
+
 
 Server hosting is provided by AuroraCloud — thank you for your support
