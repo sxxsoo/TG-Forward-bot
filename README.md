@@ -25,7 +25,7 @@
 ## 同步上游（Sync Upstream）
 
 
-** 使用方法（Fork 后）**
+**使用方法（Fork 后**
 1. Fork 本仓库。  
 2. 进入你的 Fork → Actions → 找到 `Sync from upstream` 工作流 → Enable workflow。  
 3. 首次需要手动同步：点击 **Run workflow**。  
