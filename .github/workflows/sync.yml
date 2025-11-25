@@ -1,4 +1,4 @@
-name: Sync
+name: Sync from upstrea
 
 on:
   workflow_dispatch:      # 支持手动运行
@@ -70,4 +70,4 @@ jobs:
 
             If everything looks good, please merge this PR.
           base: ${{ env.TARGET_BRANCH }}
-          head: sync-upstream-${{ github.run_id }
+          head: sync-upstream-${{ github.run_id }}
