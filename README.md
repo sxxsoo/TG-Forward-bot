@@ -1,3 +1,5 @@
+# [English](./README_EN.md)
+
 # Tgbot消息转发🤖️
 
 
