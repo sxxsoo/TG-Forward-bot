@@ -78,10 +78,10 @@ chmod +x bot_manager.sh
 
 
 **3. Enter menu → Select option 2 to configure parameters:**
-	1.	Create a Telegram bot using @BotFather and get BOT_TOKEN
-	2.	Use @userinfobot to get your user ID
-	3.	Get the target group ID (supergroup, starts with -100)
-	4.	Set channel binding (optional)
+1. Create a Telegram bot using @BotFather and get BOT_TOKEN
+2. Use @userinfobot to get your user ID
+3. Get the target group ID (supergroup, starts with -100)
+4. Set channel binding (optional)
 
 Edit the following variables:
 
