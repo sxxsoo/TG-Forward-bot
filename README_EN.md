@@ -68,12 +68,16 @@ Download the `.sh` script and upload it to your server.
 **1. Grant execute permission:**
 ```bash
 chmod +x bot_manager.sh
+```
 
-2. Run the script:
 
+** 2. Run the script: **
+```bash
 ./bot_manager.sh
+```
 
-3. Enter menu → Select option 2 to configure parameters:
+
+** 3. Enter menu → Select option 2 to configure parameters: **
 	1.	Create a Telegram bot using @BotFather and get BOT_TOKEN
 	2.	Use @userinfobot to get your user ID
 	3.	Get the target group ID (supergroup, starts with -100)
@@ -87,9 +91,10 @@ ADMIN_USER_ID	Admin Telegram user ID	123456789
 GROUP_CHAT_ID	Target group chat ID	-100123456789
 REQUIRED_CHANNELS	Channels users must join before using bot (optional)	@channel1,-100123456789
 
-4. After configuration, select option 1 to install the bot
+** 4. After configuration, select option 1 to install the bot **
 
-5. After installation, select Start Bot to enable the forwarding service
+** 5. After installation, select Start Bot to enable the forwarding service **
+
 
 Supported Media Types
 
