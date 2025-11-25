@@ -10,7 +10,8 @@
 # REQUIRED_CHANNELS 用户必须加入的频道（可选） @channel1,-100123456789
 # 多个频道用英文逗号分隔，支持 @用户名 和 -100 开头的ID格式。
 # 增加线程控制，可根据自己服务器选择9进行调节
-#2025.11.26 修复转发失败推送成功问题，因为tg的api限制，增加发送重试
+# 2025.11.26 修复转发失败推送成功问题，因为tg的api限制，增加发送重试
+# 新增功能：删除包含关键词所在行
 
 CONFIG_FILE="/root/telegram-bot/bot_config.py"
 INSTALL_DIR="/root/telegram-bot"
@@ -44,12 +45,13 @@ show_menu() {
     echo "7. 查看运行状态"
     echo "8. 查看日志"
     echo "9. 配置线程参数"
-    echo "10. 卸载机器人"
-    echo "11. 卸载管理脚本"
+    echo "10. 配置关键词过滤"
+    echo "11. 卸载机器人"
+    echo "12. 卸载管理脚本"
     echo "0. 退出脚本"
     echo "================================================"
     
-    read -p "请输入您的选择 [0-11]: " choice
+    read -p "请输入您的选择 [0-12]: " choice
 }
 
 read_config() {
@@ -63,11 +65,18 @@ read_config() {
         else
             REQUIRED_CHANNELS=""
         fi
+        
+        if grep -q "FILTER_KEYWORDS" "$CONFIG_FILE"; then
+            FILTER_KEYWORDS=$(grep "FILTER_KEYWORDS" "$CONFIG_FILE" | sed 's/.*= \[\([^]]*\)\].*/\1/' | sed "s/'//g; s/ //g")
+        else
+            FILTER_KEYWORDS=""
+        fi
     else
         BOT_TOKEN=""
         ADMIN_USER_ID=""
         GROUP_CHAT_ID=""
         REQUIRED_CHANNELS=""
+        FILTER_KEYWORDS=""
     fi
 }
 
@@ -82,6 +91,7 @@ configure_bot() {
     echo "2. ADMIN_USER_ID: $ADMIN_USER_ID"
     echo "3. GROUP_CHAT_ID: $GROUP_CHAT_ID"
     echo "4. REQUIRED_CHANNELS: ${REQUIRED_CHANNELS:-无}"
+    echo "5. FILTER_KEYWORDS: ${FILTER_KEYWORDS:-无}"
     echo ""
     
     read -p "是否修改配置？(y/n): " modify
@@ -99,6 +109,10 @@ configure_bot() {
     echo ""
     echo "必填频道（用逗号分隔，如 @channel1,-1001234567890）"
     read -p "REQUIRED_CHANNELS: " new_channels
+    
+    echo ""
+    echo "过滤关键词（用逗号分隔，包含这些关键词的行将被删除）"
+    read -p "FILTER_KEYWORDS: " new_keywords
     
     BOT_TOKEN=${new_token:-$BOT_TOKEN}
     ADMIN_USER_ID=${new_admin_id:-$ADMIN_USER_ID}
@@ -118,6 +132,20 @@ configure_bot() {
         channels_python="[]"
     fi
     
+    if [ -n "$new_keywords" ]; then
+        IFS=',' read -ra keyword_array <<< "$new_keywords"
+        keywords_python="["
+        for i in "${!keyword_array[@]}"; do
+            if [ $i -ne 0 ]; then
+                keywords_python+=", "
+            fi
+            keywords_python+="'${keyword_array[$i]}'"
+        done
+        keywords_python+="]"
+    else
+        keywords_python="[]"
+    fi
+    
     mkdir -p "$(dirname "$CONFIG_FILE")"
     
     cat > "$CONFIG_FILE" << EOL
@@ -126,6 +154,7 @@ BOT_TOKEN = "$BOT_TOKEN"
 ADMIN_USER_ID = $ADMIN_USER_ID
 GROUP_CHAT_ID = $GROUP_CHAT_ID
 REQUIRED_CHANNELS = $channels_python
+FILTER_KEYWORDS = $keywords_python
 DATABASE_NAME = "bot_database.db"
 EOL
 
@@ -137,6 +166,59 @@ EOL
     echo "ADMIN_USER_ID: $ADMIN_USER_ID"
     echo "GROUP_CHAT_ID: $GROUP_CHAT_ID"
     echo "REQUIRED_CHANNELS: $channels_python"
+    echo "FILTER_KEYWORDS: $keywords_python"
+    
+    sleep 3
+}
+
+configure_keywords() {
+    clear
+    echo "=== 配置关键词过滤 ==="
+    
+    read_config
+    
+    echo "当前关键词: ${FILTER_KEYWORDS:-无}"
+    echo ""
+    echo "功能说明:"
+    echo "- 包含这些关键词的行将被删除"
+    echo "- 多个关键词用逗号分隔"
+    echo "- 关键词匹配不区分大小写"
+    echo ""
+    
+    read -p "请输入新的关键词（直接回车清空）: " new_keywords
+    
+    if [ -n "$new_keywords" ]; then
+        IFS=',' read -ra keyword_array <<< "$new_keywords"
+        keywords_python="["
+        for i in "${!keyword_array[@]}"; do
+            if [ $i -ne 0 ]; then
+                keywords_python+=", "
+            fi
+            keywords_python+="'${keyword_array[$i]}'"
+        done
+        keywords_python+="]"
+    else
+        keywords_python="[]"
+    fi
+    
+    # 更新配置文件
+    if [ -f "$CONFIG_FILE" ]; then
+        # 如果存在FILTER_KEYWORDS则更新，否则添加
+        if grep -q "FILTER_KEYWORDS" "$CONFIG_FILE"; then
+            sed -i "s/FILTER_KEYWORDS = .*/FILTER_KEYWORDS = $keywords_python/" "$CONFIG_FILE"
+        else
+            # 在REQUIRED_CHANNELS行后添加FILTER_KEYWORDS
+            sed -i "/REQUIRED_CHANNELS = /a FILTER_KEYWORDS = $keywords_python" "$CONFIG_FILE"
+        fi
+    else
+        echo "❌ 配置文件不存在，请先配置机器人参数"
+        sleep 2
+        return 1
+    fi
+    
+    echo ""
+    echo "✅ 关键词配置已保存"
+    echo "新关键词: $keywords_python"
     
     sleep 3
 }
@@ -311,6 +393,7 @@ install_bot() {
     echo "ADMIN_USER_ID: $ADMIN_USER_ID"
     echo "GROUP_CHAT_ID: $GROUP_CHAT_ID"
     echo "REQUIRED_CHANNELS: ${REQUIRED_CHANNELS:-无}"
+    echo "FILTER_KEYWORDS: ${FILTER_KEYWORDS:-无}"
     echo ""
     
     read -p "确认安装？(y/n): " confirm
@@ -434,7 +517,7 @@ import concurrent.futures
 import html
 import re
 
-from bot_config import BOT_TOKEN, ADMIN_USER_ID, GROUP_CHAT_ID, REQUIRED_CHANNELS, DATABASE_NAME
+from bot_config import BOT_TOKEN, ADMIN_USER_ID, GROUP_CHAT_ID, REQUIRED_CHANNELS, FILTER_KEYWORDS, DATABASE_NAME
 
 # 设置中国时区
 china_tz = pytz.timezone('Asia/Shanghai')
@@ -462,6 +545,7 @@ thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS)
 
 # 记录线程配置
 logger.info(f"线程配置: MAX_WORKERS={MAX_WORKERS}, MEDIA_GROUP_DELAY={MEDIA_GROUP_DELAY}")
+logger.info(f"过滤关键词: {FILTER_KEYWORDS}")
 
 def get_china_time():
     """获取中国时区时间"""
@@ -507,6 +591,33 @@ def load_banned_users():
         logger.info(f"已加载 {len(BANNED_USERS)} 个被封禁用户")
     except Exception as e:
         logger.error(f"加载封禁用户列表失败: {e}")
+
+def filter_text_content(text):
+    """过滤文本内容，删除包含关键词的行"""
+    if not text or not FILTER_KEYWORDS:
+        return text
+    
+    lines = text.split('\n')
+    filtered_lines = []
+    
+    for line in lines:
+        should_keep = True
+        for keyword in FILTER_KEYWORDS:
+            if keyword.lower() in line.lower():
+                should_keep = False
+                logger.info(f"过滤掉包含关键词 '{keyword}' 的行: {line[:50]}...")
+                break
+        
+        if should_keep:
+            filtered_lines.append(line)
+    
+    filtered_text = '\n'.join(filtered_lines)
+    
+    # 如果过滤后文本为空，返回None
+    if not filtered_text.strip():
+        return None
+    
+    return filtered_text
 
 def record_user_usage(user_id, username, first_name, last_name):
     conn = sqlite3.connect(DATABASE_NAME)
@@ -896,6 +1007,14 @@ async def send_media_group_to_channel(media_group_data):
     try:
         media_list = []
         caption = media_group_data.get('caption', '')
+        
+        # 过滤caption中的关键词
+        if caption and FILTER_KEYWORDS:
+            filtered_caption = filter_text_content(caption)
+            if filtered_caption is None:
+                caption = ""  # 如果所有内容都被过滤，caption为空
+            else:
+                caption = filtered_caption
         
         # 构建完整的caption（用户信息 + 原始caption）
         # 注意：InputMediaPhoto/InputMediaVideo 的 caption 不支持 HTML 解析，只能使用纯文本
@@ -1300,8 +1419,14 @@ async def handle_private_message(update: Update, context: ContextTypes.DEFAULT_T
         else:
             # 处理单个消息 - 所有内容在一个消息中发送，使用多线程
             if message.text:
-                # 纯文本消息
-                full_text = f"{user_info}\n\n{message.text_html or message.text}"
+                # 纯文本消息 - 过滤关键词
+                filtered_text = filter_text_content(message.text_html or message.text)
+                if filtered_text is None:
+                    # 如果所有内容都被过滤，通知用户
+                    await update.message.reply_text("❌ 消息内容包含被过滤的关键词，无法转发。")
+                    return
+                
+                full_text = f"{user_info}\n\n{filtered_text}"
                 asyncio.create_task(
                     send_message_with_notification(context.bot, GROUP_CHAT_ID, full_text, ParseMode.HTML, message.chat_id, "消息")
                 )
@@ -1310,7 +1435,10 @@ async def handle_private_message(update: Update, context: ContextTypes.DEFAULT_T
                 photo = message.photo[-1]
                 full_caption = user_info
                 if message.caption:
-                    full_caption += f"\n\n{message.caption}"
+                    # 过滤caption中的关键词
+                    filtered_caption = filter_text_content(message.caption)
+                    if filtered_caption is not None:
+                        full_caption += f"\n\n{filtered_caption}"
                 
                 asyncio.create_task(
                     send_photo_with_notification(context.bot, GROUP_CHAT_ID, photo.file_id, full_caption, ParseMode.HTML, message.chat_id, "图片")
@@ -1319,7 +1447,10 @@ async def handle_private_message(update: Update, context: ContextTypes.DEFAULT_T
                 # 单个视频
                 full_caption = user_info
                 if message.caption:
-                    full_caption += f"\n\n{message.caption}"
+                    # 过滤caption中的关键词
+                    filtered_caption = filter_text_content(message.caption)
+                    if filtered_caption is not None:
+                        full_caption += f"\n\n{filtered_caption}"
                 
                 asyncio.create_task(
                     send_video_with_notification(context.bot, GROUP_CHAT_ID, message.video.file_id, full_caption, ParseMode.HTML, message.chat_id, "视频")
@@ -1328,7 +1459,10 @@ async def handle_private_message(update: Update, context: ContextTypes.DEFAULT_T
                 # 单个文档
                 full_caption = user_info
                 if message.caption:
-                    full_caption += f"\n\n{message.caption}"
+                    # 过滤caption中的关键词
+                    filtered_caption = filter_text_content(message.caption)
+                    if filtered_caption is not None:
+                        full_caption += f"\n\n{filtered_caption}"
                 
                 asyncio.create_task(
                     send_document_with_notification(context.bot, GROUP_CHAT_ID, message.document.file_id, full_caption, ParseMode.HTML, message.chat_id, "文档")
@@ -1337,7 +1471,10 @@ async def handle_private_message(update: Update, context: ContextTypes.DEFAULT_T
                 # 语音消息
                 full_caption = user_info
                 if message.caption:
-                    full_caption += f"\n\n{message.caption}"
+                    # 过滤caption中的关键词
+                    filtered_caption = filter_text_content(message.caption)
+                    if filtered_caption is not None:
+                        full_caption += f"\n\n{filtered_caption}"
                 
                 asyncio.create_task(
                     send_voice_with_notification(context.bot, GROUP_CHAT_ID, message.voice.file_id, full_caption, ParseMode.HTML, message.chat_id, "语音消息")
@@ -1354,7 +1491,10 @@ async def handle_private_message(update: Update, context: ContextTypes.DEFAULT_T
                 # 音频文件
                 full_caption = user_info
                 if message.caption:
-                    full_caption += f"\n\n{message.caption}"
+                    # 过滤caption中的关键词
+                    filtered_caption = filter_text_content(message.caption)
+                    if filtered_caption is not None:
+                        full_caption += f"\n\n{filtered_caption}"
                 
                 asyncio.create_task(
                     send_audio_with_notification(context.bot, GROUP_CHAT_ID, message.audio.file_id, full_caption, ParseMode.HTML, message.chat_id, "音频")
@@ -1567,8 +1707,6 @@ EOL
     sleep 3
 }
 
-# [其余函数保持不变...]
-
 start_service() {
     clear
     echo "=== 启动机器人 ==="
@@ -1732,7 +1870,7 @@ uninstall_manager() {
     
     echo ""
     echo "管理脚本已卸载完成！"
-    echo "注意：机器人服务仍然存在，如需卸载机器人请先使用选项10"
+    echo "注意：机器人服务仍然存在，如需卸载机器人请先使用选项11"
     sleep 3
     
     exit 0
@@ -1752,8 +1890,9 @@ main() {
             7) view_status ;;
             8) view_logs ;;
             9) configure_threads ;;
-            10) uninstall_bot ;;
-            11) uninstall_manager ;;
+            10) configure_keywords ;;
+            11) uninstall_bot ;;
+            12) uninstall_manager ;;
             0)
                 echo "再见！"
                 exit 0
