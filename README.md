@@ -55,9 +55,17 @@ chmod +x bot_manager.sh
 
 
 ***编辑以下变量：***
+
+
 · BOT_TOKEN: 您的机器人令牌
+
+
 · ADMIN_USER_ID: 您的用户 ID
+
+
 · GROUP_CHAT_ID: 目标群组的 ID
+
+
 · REQUIRED_CHANNELS 频道绑定 ID/用户名（可选） 
 
 
