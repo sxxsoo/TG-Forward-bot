@@ -10,8 +10,9 @@
 # REQUIRED_CHANNELS 用户必须加入的频道（可选） @channel1,-100123456789
 # 多个频道用英文逗号分隔，支持 @用户名 和 -100 开头的ID格式。
 # 增加线程控制，可根据自己服务器选择9进行调节
-# 2025.11.26 修复转发失败推送成功问题，因为tg的api限制，增加发送重试
-# 新增功能：删除包含关键词所在行
+#2025.11.26 修复转发失败推送成功问题，因为tg的api限制，增加发送重试
+# 新增功能：删除包含关键词的行
+# 新增功能：用户隐私保护（可分别控制用户名、用户ID、时间的显示）
 
 CONFIG_FILE="/root/telegram-bot/bot_config.py"
 INSTALL_DIR="/root/telegram-bot"
@@ -46,12 +47,13 @@ show_menu() {
     echo "8. 查看日志"
     echo "9. 配置线程参数"
     echo "10. 配置关键词过滤"
-    echo "11. 卸载机器人"
-    echo "12. 卸载管理脚本"
+    echo "11. 配置隐私保护"
+    echo "12. 卸载机器人"
+    echo "13. 卸载管理脚本"
     echo "0. 退出脚本"
     echo "================================================"
     
-    read -p "请输入您的选择 [0-12]: " choice
+    read -p "请输入您的选择 [0-13]: " choice
 }
 
 read_config() {
@@ -71,12 +73,34 @@ read_config() {
         else
             FILTER_KEYWORDS=""
         fi
+        
+        # 读取隐私保护设置，默认为True（显示）
+        if grep -q "SHOW_USERNAME" "$CONFIG_FILE"; then
+            SHOW_USERNAME=$(grep "SHOW_USERNAME" "$CONFIG_FILE" | awk '{print $3}')
+        else
+            SHOW_USERNAME="True"
+        fi
+        
+        if grep -q "SHOW_USER_ID" "$CONFIG_FILE"; then
+            SHOW_USER_ID=$(grep "SHOW_USER_ID" "$CONFIG_FILE" | awk '{print $3}')
+        else
+            SHOW_USER_ID="True"
+        fi
+        
+        if grep -q "SHOW_TIMESTAMP" "$CONFIG_FILE"; then
+            SHOW_TIMESTAMP=$(grep "SHOW_TIMESTAMP" "$CONFIG_FILE" | awk '{print $3}')
+        else
+            SHOW_TIMESTAMP="True"
+        fi
     else
         BOT_TOKEN=""
         ADMIN_USER_ID=""
         GROUP_CHAT_ID=""
         REQUIRED_CHANNELS=""
         FILTER_KEYWORDS=""
+        SHOW_USERNAME="True"
+        SHOW_USER_ID="True"
+        SHOW_TIMESTAMP="True"
     fi
 }
 
@@ -92,6 +116,9 @@ configure_bot() {
     echo "3. GROUP_CHAT_ID: $GROUP_CHAT_ID"
     echo "4. REQUIRED_CHANNELS: ${REQUIRED_CHANNELS:-无}"
     echo "5. FILTER_KEYWORDS: ${FILTER_KEYWORDS:-无}"
+    echo "6. 隐私保护 - 显示用户名: $SHOW_USERNAME"
+    echo "7. 隐私保护 - 显示用户ID: $SHOW_USER_ID"
+    echo "8. 隐私保护 - 显示时间: $SHOW_TIMESTAMP"
     echo ""
     
     read -p "是否修改配置？(y/n): " modify
@@ -155,6 +182,9 @@ ADMIN_USER_ID = $ADMIN_USER_ID
 GROUP_CHAT_ID = $GROUP_CHAT_ID
 REQUIRED_CHANNELS = $channels_python
 FILTER_KEYWORDS = $keywords_python
+SHOW_USERNAME = $SHOW_USERNAME
+SHOW_USER_ID = $SHOW_USER_ID
+SHOW_TIMESTAMP = $SHOW_TIMESTAMP
 DATABASE_NAME = "bot_database.db"
 EOL
 
@@ -167,6 +197,9 @@ EOL
     echo "GROUP_CHAT_ID: $GROUP_CHAT_ID"
     echo "REQUIRED_CHANNELS: $channels_python"
     echo "FILTER_KEYWORDS: $keywords_python"
+    echo "隐私保护 - 显示用户名: $SHOW_USERNAME"
+    echo "隐私保护 - 显示用户ID: $SHOW_USER_ID"
+    echo "隐私保护 - 显示时间: $SHOW_TIMESTAMP"
     
     sleep 3
 }
@@ -219,6 +252,112 @@ configure_keywords() {
     echo ""
     echo "✅ 关键词配置已保存"
     echo "新关键词: $keywords_python"
+    
+    sleep 3
+}
+
+configure_privacy() {
+    clear
+    echo "=== 配置隐私保护 ==="
+    
+    read_config
+    
+    echo "当前隐私保护设置:"
+    echo "1. 显示用户名: $SHOW_USERNAME"
+    echo "2. 显示用户ID: $SHOW_USER_ID"
+    echo "3. 显示时间戳: $SHOW_TIMESTAMP"
+    echo ""
+    echo "说明:"
+    echo "- 设置为 True: 在转发消息中显示该信息"
+    echo "- 设置为 False: 在转发消息中隐藏该信息"
+    echo ""
+    
+    read -p "是否修改隐私保护设置？(y/n): " modify
+    if [ "$modify" != "y" ] && [ "$modify" != "Y" ]; then
+        return
+    fi
+    
+    echo ""
+    echo "请选择要修改的选项（输入数字，多个用逗号分隔，如 1,3）:"
+    echo "1. 显示用户名"
+    echo "2. 显示用户ID" 
+    echo "3. 显示时间戳"
+    echo "0. 返回"
+    echo ""
+    
+    read -p "请选择: " privacy_choices
+    
+    IFS=',' read -ra choices <<< "$privacy_choices"
+    
+    for choice in "${choices[@]}"; do
+        case $choice in
+            1)
+                if [ "$SHOW_USERNAME" = "True" ]; then
+                    SHOW_USERNAME="False"
+                    echo "✅ 已隐藏用户名"
+                else
+                    SHOW_USERNAME="True"
+                    echo "✅ 已显示用户名"
+                fi
+                ;;
+            2)
+                if [ "$SHOW_USER_ID" = "True" ]; then
+                    SHOW_USER_ID="False"
+                    echo "✅ 已隐藏用户ID"
+                else
+                    SHOW_USER_ID="True"
+                    echo "✅ 已显示用户ID"
+                fi
+                ;;
+            3)
+                if [ "$SHOW_TIMESTAMP" = "True" ]; then
+                    SHOW_TIMESTAMP="False"
+                    echo "✅ 已隐藏时间戳"
+                else
+                    SHOW_TIMESTAMP="True"
+                    echo "✅ 已显示时间戳"
+                fi
+                ;;
+            0)
+                return
+                ;;
+            *)
+                echo "❌ 无效选择: $choice"
+                ;;
+        esac
+    done
+    
+    # 更新配置文件
+    if [ -f "$CONFIG_FILE" ]; then
+        # 更新或添加隐私设置
+        if grep -q "SHOW_USERNAME" "$CONFIG_FILE"; then
+            sed -i "s/SHOW_USERNAME = .*/SHOW_USERNAME = $SHOW_USERNAME/" "$CONFIG_FILE"
+        else
+            sed -i "/FILTER_KEYWORDS = /a SHOW_USERNAME = $SHOW_USERNAME" "$CONFIG_FILE"
+        fi
+        
+        if grep -q "SHOW_USER_ID" "$CONFIG_FILE"; then
+            sed -i "s/SHOW_USER_ID = .*/SHOW_USER_ID = $SHOW_USER_ID/" "$CONFIG_FILE"
+        else
+            sed -i "/SHOW_USERNAME = /a SHOW_USER_ID = $SHOW_USER_ID" "$CONFIG_FILE"
+        fi
+        
+        if grep -q "SHOW_TIMESTAMP" "$CONFIG_FILE"; then
+            sed -i "s/SHOW_TIMESTAMP = .*/SHOW_TIMESTAMP = $SHOW_TIMESTAMP/" "$CONFIG_FILE"
+        else
+            sed -i "/SHOW_USER_ID = /a SHOW_TIMESTAMP = $SHOW_TIMESTAMP" "$CONFIG_FILE"
+        fi
+    else
+        echo "❌ 配置文件不存在，请先配置机器人参数"
+        sleep 2
+        return 1
+    fi
+    
+    echo ""
+    echo "✅ 隐私保护设置已保存"
+    echo "显示用户名: $SHOW_USERNAME"
+    echo "显示用户ID: $SHOW_USER_ID"
+    echo "显示时间戳: $SHOW_TIMESTAMP"
     
     sleep 3
 }
@@ -394,6 +533,9 @@ install_bot() {
     echo "GROUP_CHAT_ID: $GROUP_CHAT_ID"
     echo "REQUIRED_CHANNELS: ${REQUIRED_CHANNELS:-无}"
     echo "FILTER_KEYWORDS: ${FILTER_KEYWORDS:-无}"
+    echo "隐私保护 - 显示用户名: $SHOW_USERNAME"
+    echo "隐私保护 - 显示用户ID: $SHOW_USER_ID"
+    echo "隐私保护 - 显示时间: $SHOW_TIMESTAMP"
     echo ""
     
     read -p "确认安装？(y/n): " confirm
@@ -518,6 +660,7 @@ import html
 import re
 
 from bot_config import BOT_TOKEN, ADMIN_USER_ID, GROUP_CHAT_ID, REQUIRED_CHANNELS, FILTER_KEYWORDS, DATABASE_NAME
+from bot_config import SHOW_USERNAME, SHOW_USER_ID, SHOW_TIMESTAMP
 
 # 设置中国时区
 china_tz = pytz.timezone('Asia/Shanghai')
@@ -543,13 +686,41 @@ media_groups = {}
 # 线程池执行器
 thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS)
 
-# 记录线程配置
+# 记录配置
 logger.info(f"线程配置: MAX_WORKERS={MAX_WORKERS}, MEDIA_GROUP_DELAY={MEDIA_GROUP_DELAY}")
 logger.info(f"过滤关键词: {FILTER_KEYWORDS}")
+logger.info(f"隐私保护 - 显示用户名: {SHOW_USERNAME}, 显示用户ID: {SHOW_USER_ID}, 显示时间: {SHOW_TIMESTAMP}")
 
 def get_china_time():
     """获取中国时区时间"""
     return datetime.now(china_tz)
+
+def build_user_info(user):
+    """构建用户信息，根据隐私设置决定显示内容"""
+    user_info_parts = []
+    
+    # 用户名显示
+    if SHOW_USERNAME:
+        if user.username:
+            user_info_parts.append(f"👤 来自用户: {user.first_name or '未知'} (@{user.username})")
+        else:
+            user_info_parts.append(f"👤 来自用户: {user.first_name or '未知'}")
+    else:
+        user_info_parts.append("👤 来自用户: ***")
+    
+    # 用户ID显示
+    if SHOW_USER_ID:
+        user_info_parts.append(f"🆔 用户 ID: <code>{user.id}</code>")
+    else:
+        user_info_parts.append("🆔 用户 ID: <code>***</code>")
+    
+    # 时间显示
+    if SHOW_TIMESTAMP:
+        user_info_parts.append(f"⏰ 时间: {get_china_time().strftime('%Y-%m-%d %H:%M:%S')}")
+    else:
+        user_info_parts.append("⏰ 时间: ***")
+    
+    return "\n".join(user_info_parts)
 
 def init_database():
     conn = sqlite3.connect(DATABASE_NAME)
@@ -1365,12 +1536,8 @@ async def handle_private_message(update: Update, context: ContextTypes.DEFAULT_T
     
     asyncio.create_task(record_usage_async())
     
-    # 构建用户信息 - 修复ID格式问题
-    user_info = f"👤 来自用户: {user.first_name or '未知'}"
-    if user.username:
-        user_info += f" (@{user.username})"
-    user_info += f"\n🆔 用户 ID: <code>{user.id}</code>"
-    user_info += f"\n⏰ 时间: {get_china_time().strftime('%Y-%m-%d %H:%M:%S')}"
+    # 构建用户信息 - 根据隐私设置
+    user_info = build_user_info(user)
     
     try:
         # 处理媒体组消息
@@ -1870,7 +2037,7 @@ uninstall_manager() {
     
     echo ""
     echo "管理脚本已卸载完成！"
-    echo "注意：机器人服务仍然存在，如需卸载机器人请先使用选项11"
+    echo "注意：机器人服务仍然存在，如需卸载机器人请先使用选项12"
     sleep 3
     
     exit 0
@@ -1891,8 +2058,9 @@ main() {
             8) view_logs ;;
             9) configure_threads ;;
             10) configure_keywords ;;
-            11) uninstall_bot ;;
-            12) uninstall_manager ;;
+            11) configure_privacy ;;
+            12) uninstall_bot ;;
+            13) uninstall_manager ;;
             0)
                 echo "再见！"
                 exit 0
