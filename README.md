@@ -153,10 +153,10 @@ chmod +x bot_manager.sh
 
 
 
-#依赖
+## 依赖
 
-
+```bash
 python-telegram-bot 22.5
-
+```
 
 本服务服务器由 极光云 提供，谢谢支持
