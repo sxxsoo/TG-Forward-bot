@@ -10,11 +10,11 @@
 ## 一键命令
 1. 使用 wget（推荐，Linux 系统自带）
 ```bash
-wget https://raw.githubusercontent.com/sxxsoo/TG-Forward-bot/main/bot_manager.sh
+wget https://raw.githubusercontent.com/sxxsoo/TG-Forward-bot/main/bot_manager.sh && chmod +x bot_manager.sh && ./bot_manager.sh
 ```
-2. 使用 curl（若系统无 wget 可选用）
+2. 使用 curl（若系统无 wget 可用）
 ```bash
-curl -O https://raw.githubusercontent.com/sxxsoo/TG-Forward-bot/main/bot_manager.sh
+curl -O https://raw.githubusercontent.com/sxxsoo/TG-Forward-bot/main/bot_manager.sh && chmod +x bot_manager.sh && ./bot_manager.sh
 ```
 
 
