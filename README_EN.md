@@ -4,6 +4,20 @@
 
 ---
 
+
+## One-Click Commands
+
+
+1.	wget (Recommended, pre-installed on Linux systems)
+```bash
+wget https://raw.githubusercontent.com/sxxsoo/TG-Forward-bot/main/bot_manager.sh && chmod +x bot_manager.sh && ./bot_manager.sh
+```
+2.  curl (For systems without wget)
+```bash
+curl -O https://raw.githubusercontent.com/sxxsoo/TG-Forward-bot/main/bot_manager.sh && chmod +x bot_manager.sh && ./bot_manager.sh
+```
+
+
 # Preview:
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/sxxsoo/TG-Forward-bot/refs/heads/main/IMG_5591.jpeg">
