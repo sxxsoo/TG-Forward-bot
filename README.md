@@ -20,9 +20,9 @@ curl -O https://raw.githubusercontent.com/sxxsoo/TG-Forward-bot/main/bot_manager
 
 # 预览：
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/sxxsoo/TG-Forward-bot/refs/heads/main/IMG_4998.jpeg">
-  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/sxxsoo/TG-Forward-bot/refs/heads/main/IMG_4998.jpeg">
-  <img alt="自定义图片" src="https://raw.githubusercontent.com/sxxsoo/TG-Forward-bot/refs/heads/main/IMG_4998.jpeg">
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/sxxsoo/TG-Forward-bot/refs/heads/main/IMG_5591.jpeg">
+  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/sxxsoo/TG-Forward-bot/refs/heads/main/IMG_5591.jpeg">
+  <img alt="自定义图片" src="https://raw.githubusercontent.com/sxxsoo/TG-Forward-bot/refs/heads/main/IMG_5591.jpeg">
 </picture>
 
 **补充**
