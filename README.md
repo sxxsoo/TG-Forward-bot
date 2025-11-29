@@ -49,7 +49,7 @@ curl -O https://raw.githubusercontent.com/sxxsoo/TG-Forward-bot/main/bot_manager
 引入 HTTPXRequest,time 模块
 
 
-#2025.11.28 修改配置逻辑，解决关键词清空
+#2025.11.28 修改配置逻辑，解决关键词清空，增加配置子菜单
 
 
 ## 同步上游（Sync Upstream）
