@@ -34,6 +34,21 @@ curl -O https://raw.githubusercontent.com/sxxsoo/TG-Forward-bot/main/bot_manager
 #2025.11.26 修复转发失败推送成功问题，因为tg的api限制，增加发送重试
 
 
+新增功能：删除包含关键词的行
+
+
+新增功能：用户隐私保护（可分别控制用户名、用户ID、时间的显示）
+
+
+#2025.11.27 修复重复发送问题：
+
+
+优化媒体组处理
+
+
+引入 HTTPXRequest,time 模块
+
+
 ## 同步上游（Sync Upstream）
 
 
