@@ -305,12 +305,12 @@ configure_threads() {
         MEDIA_GROUP_DELAY=$(grep "MEDIA_GROUP_DELAY" "$THREAD_CONFIG_FILE" | awk '{print $3}')
     else
         MAX_WORKERS=10
-        MEDIA_GROUP_DELAY=1.5
+        MEDIA_GROUP_DELAY=3.0
     fi
     
     echo "当前线程配置:"
     echo "1. 最大工作线程数: $MAX_WORKERS (范围: 1-50)"
-    echo "2. 媒体组等待时间: $MEDIA_GROUP_DELAY 秒 (建议 1.5-3.0)"
+    echo "2. 媒体组等待时间: $MEDIA_GROUP_DELAY 秒 (建议 2.0-5.0)"
     echo "   (注意: 这是每次收到新图片后的等待时间，自动延时直到图片传完)"
     echo ""
     
@@ -323,7 +323,7 @@ configure_threads() {
     echo "请输入新的线程配置值（直接回车保持原值）:"
     
     read -p "最大工作线程数 (1-50): " new_workers
-    read -p "媒体组等待时间 (0.5-5.0秒): " new_delay
+    read -p "媒体组等待时间 (1.0-10.0秒): " new_delay
     
     MAX_WORKERS=${new_workers:-$MAX_WORKERS}
     MEDIA_GROUP_DELAY=${new_delay:-$MEDIA_GROUP_DELAY}
@@ -334,8 +334,8 @@ configure_threads() {
         return 1
     fi
     
-    if ! [[ "$MEDIA_GROUP_DELAY" =~ ^[0-9]+\.?[0-9]*$ ]] || (( $(echo "$MEDIA_GROUP_DELAY < 0.5" | bc -l) )) || (( $(echo "$MEDIA_GROUP_DELAY > 5.0" | bc -l) )); then
-        echo "❌ 媒体组等待时间必须是 0.5-5.0 之间的数字"
+    if ! [[ "$MEDIA_GROUP_DELAY" =~ ^[0-9]+\.?[0-9]*$ ]] || (( $(echo "$MEDIA_GROUP_DELAY < 1.0" | bc -l) )) || (( $(echo "$MEDIA_GROUP_DELAY > 10.0" | bc -l) )); then
+        echo "❌ 媒体组等待时间必须是 1.0-10.0 之间的数字"
         sleep 2
         return 1
     fi
@@ -461,7 +461,7 @@ install_bot() {
     if [ ! -f "$THREAD_CONFIG_FILE" ]; then
         cat > "$THREAD_CONFIG_FILE" << EOL
 MAX_WORKERS = 10
-MEDIA_GROUP_DELAY = 1.5
+MEDIA_GROUP_DELAY = 3.0
 EOL
     fi
     
@@ -475,8 +475,9 @@ import aiofiles
 from datetime import datetime
 import pytz
 import time
-from telegram import Update, InputMediaPhoto, InputMediaVideo, InputMediaDocument
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+import uuid
+from telegram import Update, InputMediaPhoto, InputMediaVideo, InputMediaDocument, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 from telegram.constants import ParseMode
 from telegram.request import HTTPXRequest
 import concurrent.futures
@@ -492,7 +493,7 @@ try:
     from thread_config import MAX_WORKERS, MEDIA_GROUP_DELAY
 except ImportError:
     MAX_WORKERS = 10
-    MEDIA_GROUP_DELAY = 1.5
+    MEDIA_GROUP_DELAY = 3.0
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -503,6 +504,7 @@ logger = logging.getLogger(__name__)
 BANNED_USERS = set()
 RETRY_DELAY = 2
 media_groups = {}
+failed_tasks = {} # 用于存储转发失败的任务供快捷重试
 thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS)
 
 logger.info(f"线程配置: MAX_WORKERS={MAX_WORKERS}, MEDIA_GROUP_DELAY={MEDIA_GROUP_DELAY}")
@@ -515,11 +517,14 @@ def get_china_time():
 def build_user_info(user):
     user_info_parts = []
     
+    first_name = html.escape(user.first_name or '未知')
+    
     if SHOW_USERNAME:
         if user.username:
-            user_info_parts.append(f"👤 来自用户: {user.first_name or '未知'} (@{user.username})")
+            username = html.escape(user.username)
+            user_info_parts.append(f"👤 来自用户: {first_name} (@{username})")
         else:
-            user_info_parts.append(f"👤 来自用户: {user.first_name or '未知'}")
+            user_info_parts.append(f"👤 来自用户: {first_name}")
     else:
         user_info_parts.append("👤 来自用户: ***")
     
@@ -536,7 +541,7 @@ def build_user_info(user):
     return "\n".join(user_info_parts)
 
 def init_database():
-    conn = sqlite3.connect(DATABASE_NAME)
+    conn = sqlite3.connect(DATABASE_NAME, timeout=20)
     cursor = conn.cursor()
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS user_usage (
@@ -567,7 +572,7 @@ def init_database():
 def load_banned_users():
     global BANNED_USERS
     try:
-        conn = sqlite3.connect(DATABASE_NAME)
+        conn = sqlite3.connect(DATABASE_NAME, timeout=20)
         cursor = conn.cursor()
         cursor.execute("SELECT user_id FROM banned_users")
         BANNED_USERS = {row[0] for row in cursor.fetchall()}
@@ -602,7 +607,7 @@ def filter_text_content(text):
     return filtered_text
 
 def record_user_usage(user_id, username, first_name, last_name):
-    conn = sqlite3.connect(DATABASE_NAME)
+    conn = sqlite3.connect(DATABASE_NAME, timeout=20)
     cursor = conn.cursor()
     now = get_china_time()
     
@@ -630,7 +635,7 @@ def record_user_usage(user_id, username, first_name, last_name):
     conn.close()
 
 def get_user_usage_count(user_id):
-    conn = sqlite3.connect(DATABASE_NAME)
+    conn = sqlite3.connect(DATABASE_NAME, timeout=20)
     cursor = conn.cursor()
     cursor.execute("SELECT usage_count FROM user_usage WHERE user_id = ?", (user_id,))
     result = cursor.fetchone()
@@ -639,29 +644,26 @@ def get_user_usage_count(user_id):
 
 async def retry_async_operation(operation, *args, **kwargs):
     attempt = 0
-    while True:
+    max_retries = 3
+    while attempt < max_retries:
         try:
             result = await operation(*args, **kwargs)
             return result, True
-        except httpx.ReadError as e:
-            attempt += 1
-            logger.warning(f"网络错误，第 {attempt} 次重试: {e}")
-            await asyncio.sleep(RETRY_DELAY)
         except Exception as e:
             error_str = str(e)
-            if "Flood control" in error_str or "Too Many Requests" in error_str:
+            attempt += 1
+            if "Flood control" in error_str or "Too Many Requests" in error_str or "Retry in" in error_str:
                 wait_time_match = re.search(r'Retry in (\d+) seconds', error_str)
-                if wait_time_match:
-                    wait_time = int(wait_time_match.group(1))
-                else:
-                    wait_time = 30
-                
-                attempt += 1
+                wait_time = int(wait_time_match.group(1)) if wait_time_match else 30
                 logger.warning(f"Flood控制限制，等待 {wait_time} 秒后重试 (第 {attempt} 次)")
                 await asyncio.sleep(wait_time)
+            elif "Bad Gateway" in error_str or "ReadError" in error_str or "TimedOut" in error_str or "Timeout" in error_str or "Network" in error_str or "Connection" in error_str:
+                logger.warning(f"网络异常，第 {attempt} 次重试: {e}")
+                await asyncio.sleep(RETRY_DELAY * attempt)
             else:
-                logger.error(f"操作失败，不重试: {e}")
+                logger.error(f"操作失败，不再重试: {e}")
                 return None, False
+    return None, False
 
 async def run_in_threadpool(func, *args, **kwargs):
     loop = asyncio.get_event_loop()
@@ -764,7 +766,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
     
     await update.message.reply_text(
-        f"你好 {user.first_name}！\n\n"
+        f"你好 {html.escape(user.first_name or '未知')}！\n\n"
         "欢迎使用消息转发机器人！\n"
         "您可以发送：\n"
         "• 文本消息\n"
@@ -774,9 +776,9 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• 语音消息\n"
         "• 贴纸\n\n"
         "所有内容都会转发到指定群组。\n"
-        "此服务由 @sxxsoo 脚本搭建\n\n"
         "使用 /help 查看帮助信息\n"
-        "使用 /myusage 查看您的使用次数"
+        "使用 /myusage 查看您的使用次数",
+        parse_mode=ParseMode.HTML
     )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -817,12 +819,15 @@ async def myusage_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             usage_count = await run_in_threadpool(get_user_usage_count, user.id)
             
+            first_name_safe = html.escape(user.first_name or '未知')
+            
             usage_text = (
                 f"📊 <b>您的使用统计</b>\n\n"
-                f"👤 用户: {user.first_name or '未知'}"
+                f"👤 用户: {first_name_safe}"
             )
             if user.username:
-                usage_text += f" (@{user.username})"
+                username_safe = html.escape(user.username)
+                usage_text += f" (@{username_safe})"
             
             usage_text += f"\n🆔 用户 ID: <code>{user.id}</code>"
             usage_text += f"\n📨 发送消息数: <b>{usage_count}</b>"
@@ -863,7 +868,7 @@ async def ban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ 不能封禁自己！")
             return
         
-        conn = sqlite3.connect(DATABASE_NAME)
+        conn = sqlite3.connect(DATABASE_NAME, timeout=20)
         cursor = conn.cursor()
         
         cursor.execute("SELECT username, first_name, last_name FROM user_usage WHERE user_id = ?", (target_user_id,))
@@ -916,7 +921,7 @@ async def unban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         target_user_id = int(context.args[0])
         
-        conn = sqlite3.connect(DATABASE_NAME)
+        conn = sqlite3.connect(DATABASE_NAME, timeout=20)
         cursor = conn.cursor()
         
         cursor.execute("DELETE FROM banned_users WHERE user_id = ?", (target_user_id,))
@@ -941,7 +946,7 @@ async def banned_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     try:
-        conn = sqlite3.connect(DATABASE_NAME)
+        conn = sqlite3.connect(DATABASE_NAME, timeout=20)
         cursor = conn.cursor()
         
         cursor.execute('''
@@ -960,15 +965,17 @@ async def banned_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         for i, (user_id, username, first_name, last_name, banned_at, reason) in enumerate(banned_users, 1):
             user_info = f"{first_name or ''} {last_name or ''}".strip()
+            user_info = html.escape(user_info)
             if username:
-                user_info += f" (@{username})"
+                user_info += f" (@{html.escape(username)})"
             if not user_info.strip():
                 user_info = f"用户 {user_id}"
             
             banned_text += f"{i}. {user_info}\n"
             banned_text += f"   ID: <code>{user_id}</code>\n"
             banned_text += f"   时间: {banned_at}\n"
-            banned_text += f"   原因: {reason or '无'}\n\n"
+            reason_safe = html.escape(reason or '无')
+            banned_text += f"   原因: {reason_safe}\n\n"
         
         await update.message.reply_text(banned_text, parse_mode=ParseMode.HTML)
         
@@ -989,7 +996,6 @@ async def send_media_group_to_channel(media_group_data):
                 caption = filtered_caption
         
         user_info = media_group_data.get('user_info', '')
-        
         user_info_plain = user_info.replace('<code>', '').replace('</code>', '')
         
         full_caption = user_info_plain
@@ -1015,44 +1021,40 @@ async def send_media_group_to_channel(media_group_data):
         
         if media_list:
             attempt = 0
-            while True:
+            max_retries = 5
+            while attempt < max_retries:
                 try:
                     result = await media_group_data['bot'].send_media_group(
                         chat_id=GROUP_CHAT_ID,
                         media=media_list
                     )
                     if result:
-                        attempt += 1
-                        logger.info(f"成功发送媒体组，包含 {len(media_list)} 个媒体文件 (尝试 {attempt})")
+                        logger.info(f"成功发送媒体组，包含 {len(media_list)} 个媒体文件 (尝试 {attempt+1})")
                         return True
-                    else:
-                        attempt += 1
-                        logger.warning(f"媒体组发送返回空结果 (尝试 {attempt})")
                 except Exception as e:
                     error_str = str(e)
                     attempt += 1
                     
-                    if "Flood control" in error_str or "Too Many Requests" in error_str:
-                        import re
+                    if "Flood control" in error_str or "Too Many Requests" in error_str or "Retry in" in error_str:
                         wait_time_match = re.search(r'Retry in (\d+) seconds', error_str)
-                        if wait_time_match:
-                            wait_time = int(wait_time_match.group(1))
-                        else:
-                            wait_time = 30
-                        
+                        wait_time = int(wait_time_match.group(1)) if wait_time_match else 30
                         logger.warning(f"Flood控制限制，等待 {wait_time} 秒后重试媒体组 (第 {attempt} 次)")
                         await asyncio.sleep(wait_time)
+                    elif "Bad Gateway" in error_str or "ReadError" in error_str or "TimedOut" in error_str or "Network" in error_str or "Connection" in error_str or "Timeout" in error_str:
+                        logger.warning(f"网络/网关异常 (尝试 {attempt}): {e}")
+                        await asyncio.sleep(RETRY_DELAY * attempt)
                     else:
                         logger.warning(f"发送媒体组失败 (尝试 {attempt}): {e}")
                         await asyncio.sleep(RETRY_DELAY)
-        
+            logger.error("发送媒体组达到最大重试次数")
     except Exception as e:
         logger.error(f"发送媒体组时出错: {e}")
     return False
 
 async def send_message_with_retry(bot, chat_id, text, parse_mode=None):
     attempt = 0
-    while True:
+    max_retries = 5
+    while attempt < max_retries:
         try:
             result = await bot.send_message(
                 chat_id=chat_id,
@@ -1060,32 +1062,28 @@ async def send_message_with_retry(bot, chat_id, text, parse_mode=None):
                 parse_mode=parse_mode
             )
             if result:
-                attempt += 1
-                logger.info(f"消息发送成功 (尝试 {attempt})")
+                logger.info(f"消息发送成功 (尝试 {attempt+1})")
                 return True
-            else:
-                attempt += 1
-                logger.warning(f"消息发送返回空结果 (尝试 {attempt})")
         except Exception as e:
             error_str = str(e)
             attempt += 1
-            
-            if "Flood control" in error_str or "Too Many Requests" in error_str:
+            if "Flood control" in error_str or "Too Many Requests" in error_str or "Retry in" in error_str:
                 wait_time_match = re.search(r'Retry in (\d+) seconds', error_str)
-                if wait_time_match:
-                    wait_time = int(wait_time_match.group(1))
-                else:
-                    wait_time = 30
-                
-                logger.warning(f"Flood控制限制，等待 {wait_time} 秒后重试消息 (第 {attempt} 次)")
+                wait_time = int(wait_time_match.group(1)) if wait_time_match else 30
+                logger.warning(f"限制，等待 {wait_time} 秒后重试 (第 {attempt} 次)")
                 await asyncio.sleep(wait_time)
+            elif "Bad Gateway" in error_str or "ReadError" in error_str or "TimedOut" in error_str or "Network" in error_str or "Timeout" in error_str:
+                logger.warning(f"网络/网关异常 (尝试 {attempt}): {e}")
+                await asyncio.sleep(RETRY_DELAY * attempt)
             else:
-                logger.warning(f"发送消息失败 (尝试 {attempt}): {e}")
+                logger.warning(f"发送失败 (尝试 {attempt}): {e}")
                 await asyncio.sleep(RETRY_DELAY)
+    return False
 
 async def send_photo_with_retry(bot, chat_id, photo, caption=None, parse_mode=None):
     attempt = 0
-    while True:
+    max_retries = 5
+    while attempt < max_retries:
         try:
             result = await bot.send_photo(
                 chat_id=chat_id,
@@ -1094,32 +1092,28 @@ async def send_photo_with_retry(bot, chat_id, photo, caption=None, parse_mode=No
                 parse_mode=parse_mode
             )
             if result:
-                attempt += 1
-                logger.info(f"图片发送成功 (尝试 {attempt})")
+                logger.info(f"图片发送成功 (尝试 {attempt+1})")
                 return True
-            else:
-                attempt += 1
-                logger.warning(f"图片发送返回空结果 (尝试 {attempt})")
         except Exception as e:
             error_str = str(e)
             attempt += 1
-            
-            if "Flood control" in error_str or "Too Many Requests" in error_str:
+            if "Flood control" in error_str or "Too Many Requests" in error_str or "Retry in" in error_str:
                 wait_time_match = re.search(r'Retry in (\d+) seconds', error_str)
-                if wait_time_match:
-                    wait_time = int(wait_time_match.group(1))
-                else:
-                    wait_time = 30
-                
-                logger.warning(f"Flood控制限制，等待 {wait_time} 秒后重试图片 (第 {attempt} 次)")
+                wait_time = int(wait_time_match.group(1)) if wait_time_match else 30
+                logger.warning(f"限制，等待 {wait_time} 秒后重试 (第 {attempt} 次)")
                 await asyncio.sleep(wait_time)
+            elif "Bad Gateway" in error_str or "ReadError" in error_str or "TimedOut" in error_str or "Network" in error_str or "Timeout" in error_str:
+                logger.warning(f"网络/网关异常 (尝试 {attempt}): {e}")
+                await asyncio.sleep(RETRY_DELAY * attempt)
             else:
                 logger.warning(f"发送图片失败 (尝试 {attempt}): {e}")
                 await asyncio.sleep(RETRY_DELAY)
+    return False
 
 async def send_video_with_retry(bot, chat_id, video, caption=None, parse_mode=None):
     attempt = 0
-    while True:
+    max_retries = 5
+    while attempt < max_retries:
         try:
             result = await bot.send_video(
                 chat_id=chat_id,
@@ -1128,32 +1122,28 @@ async def send_video_with_retry(bot, chat_id, video, caption=None, parse_mode=No
                 parse_mode=parse_mode
             )
             if result:
-                attempt += 1
-                logger.info(f"视频发送成功 (尝试 {attempt})")
+                logger.info(f"视频发送成功 (尝试 {attempt+1})")
                 return True
-            else:
-                attempt += 1
-                logger.warning(f"视频发送返回空结果 (尝试 {attempt})")
         except Exception as e:
             error_str = str(e)
             attempt += 1
-            
-            if "Flood control" in error_str or "Too Many Requests" in error_str:
+            if "Flood control" in error_str or "Too Many Requests" in error_str or "Retry in" in error_str:
                 wait_time_match = re.search(r'Retry in (\d+) seconds', error_str)
-                if wait_time_match:
-                    wait_time = int(wait_time_match.group(1))
-                else:
-                    wait_time = 30
-                
-                logger.warning(f"Flood控制限制，等待 {wait_time} 秒后重试视频 (第 {attempt} 次)")
+                wait_time = int(wait_time_match.group(1)) if wait_time_match else 30
+                logger.warning(f"限制，等待 {wait_time} 秒后重试 (第 {attempt} 次)")
                 await asyncio.sleep(wait_time)
+            elif "Bad Gateway" in error_str or "ReadError" in error_str or "TimedOut" in error_str or "Network" in error_str or "Timeout" in error_str:
+                logger.warning(f"网络/网关异常 (尝试 {attempt}): {e}")
+                await asyncio.sleep(RETRY_DELAY * attempt)
             else:
                 logger.warning(f"发送视频失败 (尝试 {attempt}): {e}")
                 await asyncio.sleep(RETRY_DELAY)
+    return False
 
 async def send_document_with_retry(bot, chat_id, document, caption=None, parse_mode=None):
     attempt = 0
-    while True:
+    max_retries = 5
+    while attempt < max_retries:
         try:
             result = await bot.send_document(
                 chat_id=chat_id,
@@ -1162,32 +1152,28 @@ async def send_document_with_retry(bot, chat_id, document, caption=None, parse_m
                 parse_mode=parse_mode
             )
             if result:
-                attempt += 1
-                logger.info(f"文档发送成功 (尝试 {attempt})")
+                logger.info(f"文档发送成功 (尝试 {attempt+1})")
                 return True
-            else:
-                attempt += 1
-                logger.warning(f"文档发送返回空结果 (尝试 {attempt})")
         except Exception as e:
             error_str = str(e)
             attempt += 1
-            
-            if "Flood control" in error_str or "Too Many Requests" in error_str:
+            if "Flood control" in error_str or "Too Many Requests" in error_str or "Retry in" in error_str:
                 wait_time_match = re.search(r'Retry in (\d+) seconds', error_str)
-                if wait_time_match:
-                    wait_time = int(wait_time_match.group(1))
-                else:
-                    wait_time = 30
-                
-                logger.warning(f"Flood控制限制，等待 {wait_time} 秒后重试文档 (第 {attempt} 次)")
+                wait_time = int(wait_time_match.group(1)) if wait_time_match else 30
+                logger.warning(f"限制，等待 {wait_time} 秒后重试 (第 {attempt} 次)")
                 await asyncio.sleep(wait_time)
+            elif "Bad Gateway" in error_str or "ReadError" in error_str or "TimedOut" in error_str or "Network" in error_str or "Timeout" in error_str:
+                logger.warning(f"网络/网关异常 (尝试 {attempt}): {e}")
+                await asyncio.sleep(RETRY_DELAY * attempt)
             else:
                 logger.warning(f"发送文档失败 (尝试 {attempt}): {e}")
                 await asyncio.sleep(RETRY_DELAY)
+    return False
 
 async def send_voice_with_retry(bot, chat_id, voice, caption=None, parse_mode=None):
     attempt = 0
-    while True:
+    max_retries = 5
+    while attempt < max_retries:
         try:
             result = await bot.send_voice(
                 chat_id=chat_id,
@@ -1196,64 +1182,56 @@ async def send_voice_with_retry(bot, chat_id, voice, caption=None, parse_mode=No
                 parse_mode=parse_mode
             )
             if result:
-                attempt += 1
-                logger.info(f"语音发送成功 (尝试 {attempt})")
+                logger.info(f"语音发送成功 (尝试 {attempt+1})")
                 return True
-            else:
-                attempt += 1
-                logger.warning(f"语音发送返回空结果 (尝试 {attempt})")
         except Exception as e:
             error_str = str(e)
             attempt += 1
-            
-            if "Flood control" in error_str or "Too Many Requests" in error_str:
+            if "Flood control" in error_str or "Too Many Requests" in error_str or "Retry in" in error_str:
                 wait_time_match = re.search(r'Retry in (\d+) seconds', error_str)
-                if wait_time_match:
-                    wait_time = int(wait_time_match.group(1))
-                else:
-                    wait_time = 30
-                
-                logger.warning(f"Flood控制限制，等待 {wait_time} 秒后重试语音 (第 {attempt} 次)")
+                wait_time = int(wait_time_match.group(1)) if wait_time_match else 30
+                logger.warning(f"限制，等待 {wait_time} 秒后重试 (第 {attempt} 次)")
                 await asyncio.sleep(wait_time)
+            elif "Bad Gateway" in error_str or "ReadError" in error_str or "TimedOut" in error_str or "Network" in error_str or "Timeout" in error_str:
+                logger.warning(f"网络/网关异常 (尝试 {attempt}): {e}")
+                await asyncio.sleep(RETRY_DELAY * attempt)
             else:
                 logger.warning(f"发送语音失败 (尝试 {attempt}): {e}")
                 await asyncio.sleep(RETRY_DELAY)
+    return False
 
 async def send_sticker_with_retry(bot, chat_id, sticker):
     attempt = 0
-    while True:
+    max_retries = 5
+    while attempt < max_retries:
         try:
             result = await bot.send_sticker(
                 chat_id=chat_id,
                 sticker=sticker
             )
             if result:
-                attempt += 1
-                logger.info(f"贴纸发送成功 (尝试 {attempt})")
+                logger.info(f"贴纸发送成功 (尝试 {attempt+1})")
                 return True
-            else:
-                attempt += 1
-                logger.warning(f"贴纸发送返回空结果 (尝试 {attempt})")
         except Exception as e:
             error_str = str(e)
             attempt += 1
-            
-            if "Flood control" in error_str or "Too Many Requests" in error_str:
+            if "Flood control" in error_str or "Too Many Requests" in error_str or "Retry in" in error_str:
                 wait_time_match = re.search(r'Retry in (\d+) seconds', error_str)
-                if wait_time_match:
-                    wait_time = int(wait_time_match.group(1))
-                else:
-                    wait_time = 30
-                
-                logger.warning(f"Flood控制限制，等待 {wait_time} 秒后重试贴纸 (第 {attempt} 次)")
+                wait_time = int(wait_time_match.group(1)) if wait_time_match else 30
+                logger.warning(f"限制，等待 {wait_time} 秒后重试 (第 {attempt} 次)")
                 await asyncio.sleep(wait_time)
+            elif "Bad Gateway" in error_str or "ReadError" in error_str or "TimedOut" in error_str or "Network" in error_str or "Timeout" in error_str:
+                logger.warning(f"网络/网关异常 (尝试 {attempt}): {e}")
+                await asyncio.sleep(RETRY_DELAY * attempt)
             else:
                 logger.warning(f"发送贴纸失败 (尝试 {attempt}): {e}")
                 await asyncio.sleep(RETRY_DELAY)
+    return False
 
 async def send_audio_with_retry(bot, chat_id, audio, caption=None, parse_mode=None):
     attempt = 0
-    while True:
+    max_retries = 5
+    while attempt < max_retries:
         try:
             result = await bot.send_audio(
                 chat_id=chat_id,
@@ -1262,28 +1240,23 @@ async def send_audio_with_retry(bot, chat_id, audio, caption=None, parse_mode=No
                 parse_mode=parse_mode
             )
             if result:
-                attempt += 1
-                logger.info(f"音频发送成功 (尝试 {attempt})")
+                logger.info(f"音频发送成功 (尝试 {attempt+1})")
                 return True
-            else:
-                attempt += 1
-                logger.warning(f"音频发送返回空结果 (尝试 {attempt})")
         except Exception as e:
             error_str = str(e)
             attempt += 1
-            
-            if "Flood control" in error_str or "Too Many Requests" in error_str:
+            if "Flood control" in error_str or "Too Many Requests" in error_str or "Retry in" in error_str:
                 wait_time_match = re.search(r'Retry in (\d+) seconds', error_str)
-                if wait_time_match:
-                    wait_time = int(wait_time_match.group(1))
-                else:
-                    wait_time = 30
-                
-                logger.warning(f"Flood控制限制，等待 {wait_time} 秒后重试音频 (第 {attempt} 次)")
+                wait_time = int(wait_time_match.group(1)) if wait_time_match else 30
+                logger.warning(f"限制，等待 {wait_time} 秒后重试 (第 {attempt} 次)")
                 await asyncio.sleep(wait_time)
+            elif "Bad Gateway" in error_str or "ReadError" in error_str or "TimedOut" in error_str or "Network" in error_str or "Timeout" in error_str:
+                logger.warning(f"网络/网关异常 (尝试 {attempt}): {e}")
+                await asyncio.sleep(RETRY_DELAY * attempt)
             else:
                 logger.warning(f"发送音频失败 (尝试 {attempt}): {e}")
                 await asyncio.sleep(RETRY_DELAY)
+    return False
 
 async def process_media_group_timer(group_id, chat_id, bot):
     await asyncio.sleep(MEDIA_GROUP_DELAY)
@@ -1305,8 +1278,9 @@ async def process_media_group_timer(group_id, chat_id, bot):
     
     if group_id in media_groups:
         data = media_groups[group_id]
+        message_id = data.get('message_id')
         del media_groups[group_id]
-        await send_media_group_with_notification(data, chat_id, bot)
+        await send_media_group_with_notification(data, chat_id, message_id, bot)
 
 async def handle_private_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.chat.type != "private":
@@ -1359,10 +1333,12 @@ async def handle_private_message(update: Update, context: ContextTypes.DEFAULT_T
                     'group_id': group_id,
                     'bot': context.bot,
                     'last_arrival': current_time,
-                    'timer_started': False
+                    'timer_started': False,
+                    'message_id': message.message_id
                 }
             else:
                 media_groups[group_id]['last_arrival'] = current_time
+                media_groups[group_id]['message_id'] = message.message_id # 更新为最新的一条
                 if message.caption:
                     media_groups[group_id]['caption'] = message.caption
             
@@ -1396,7 +1372,7 @@ async def handle_private_message(update: Update, context: ContextTypes.DEFAULT_T
                 
                 full_text = f"{user_info}\n\n{filtered_text}"
                 asyncio.create_task(
-                    send_message_with_notification(context.bot, GROUP_CHAT_ID, full_text, ParseMode.HTML, message.chat_id, "消息")
+                    send_message_with_notification(context.bot, GROUP_CHAT_ID, full_text, ParseMode.HTML, message.chat_id, message.message_id, "消息")
                 )
             elif message.photo:
                 photo = message.photo[-1]
@@ -1407,7 +1383,7 @@ async def handle_private_message(update: Update, context: ContextTypes.DEFAULT_T
                         full_caption += f"\n\n{filtered_caption}"
                 
                 asyncio.create_task(
-                    send_photo_with_notification(context.bot, GROUP_CHAT_ID, photo.file_id, full_caption, ParseMode.HTML, message.chat_id, "图片")
+                    send_photo_with_notification(context.bot, GROUP_CHAT_ID, photo.file_id, full_caption, ParseMode.HTML, message.chat_id, message.message_id, "图片")
                 )
             elif message.video:
                 full_caption = user_info
@@ -1417,7 +1393,7 @@ async def handle_private_message(update: Update, context: ContextTypes.DEFAULT_T
                         full_caption += f"\n\n{filtered_caption}"
                 
                 asyncio.create_task(
-                    send_video_with_notification(context.bot, GROUP_CHAT_ID, message.video.file_id, full_caption, ParseMode.HTML, message.chat_id, "视频")
+                    send_video_with_notification(context.bot, GROUP_CHAT_ID, message.video.file_id, full_caption, ParseMode.HTML, message.chat_id, message.message_id, "视频")
                 )
             elif message.document:
                 full_caption = user_info
@@ -1427,7 +1403,7 @@ async def handle_private_message(update: Update, context: ContextTypes.DEFAULT_T
                         full_caption += f"\n\n{filtered_caption}"
                 
                 asyncio.create_task(
-                    send_document_with_notification(context.bot, GROUP_CHAT_ID, message.document.file_id, full_caption, ParseMode.HTML, message.chat_id, "文档")
+                    send_document_with_notification(context.bot, GROUP_CHAT_ID, message.document.file_id, full_caption, ParseMode.HTML, message.chat_id, message.message_id, "文档")
                 )
             elif message.voice:
                 full_caption = user_info
@@ -1437,14 +1413,14 @@ async def handle_private_message(update: Update, context: ContextTypes.DEFAULT_T
                         full_caption += f"\n\n{filtered_caption}"
                 
                 asyncio.create_task(
-                    send_voice_with_notification(context.bot, GROUP_CHAT_ID, message.voice.file_id, full_caption, ParseMode.HTML, message.chat_id, "语音消息")
+                    send_voice_with_notification(context.bot, GROUP_CHAT_ID, message.voice.file_id, full_caption, ParseMode.HTML, message.chat_id, message.message_id, "语音消息")
                 )
             elif message.sticker:
                 asyncio.create_task(
-                    send_message_with_notification(context.bot, GROUP_CHAT_ID, user_info, ParseMode.HTML, message.chat_id, "用户信息")
+                    send_message_with_notification(context.bot, GROUP_CHAT_ID, user_info, ParseMode.HTML, message.chat_id, message.message_id, "用户信息")
                 )
                 asyncio.create_task(
-                    send_sticker_with_notification(context.bot, GROUP_CHAT_ID, message.sticker.file_id, message.chat_id, "贴纸")
+                    send_sticker_with_notification(context.bot, GROUP_CHAT_ID, message.sticker.file_id, message.chat_id, message.message_id, "贴纸")
                 )
             elif message.audio:
                 full_caption = user_info
@@ -1454,70 +1430,142 @@ async def handle_private_message(update: Update, context: ContextTypes.DEFAULT_T
                         full_caption += f"\n\n{filtered_caption}"
                 
                 asyncio.create_task(
-                    send_audio_with_notification(context.bot, GROUP_CHAT_ID, message.audio.file_id, full_caption, ParseMode.HTML, message.chat_id, "音频")
+                    send_audio_with_notification(context.bot, GROUP_CHAT_ID, message.audio.file_id, full_caption, ParseMode.HTML, message.chat_id, message.message_id, "音频")
                 )
         
     except Exception as e:
         logger.error(f"处理消息时出错: {e}")
         asyncio.create_task(
-            send_message_with_retry(context.bot, message.chat_id, "❌ 处理消息时发生错误，请稍后重试")
+            send_message_with_retry(context.bot, message.chat_id, "❌ 处理消息时发生内部错误，请稍后重试")
         )
 
-async def send_message_with_notification(bot, target_chat_id, text, parse_mode, user_chat_id, message_type="消息"):
+async def notify_user(bot, user_chat_id, message_id, success, message_type, task_data):
+    """带按钮的引用回复通知模块"""
+    if success:
+        await send_message_with_retry(bot, user_chat_id, f"✅ 您的{message_type}已成功转发到群组！")
+    else:
+        task_id = str(uuid.uuid4())[:8]
+        failed_tasks[task_id] = task_data
+        
+        reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔄 重试执行转发", callback_data=f"retry_{task_id}")]])
+        attempt = 0
+        while attempt < 3:
+            try:
+                await bot.send_message(
+                    chat_id=user_chat_id,
+                    text=f"❌ {message_type}转发失败，请点击下方按钮重试",
+                    reply_to_message_id=message_id,
+                    reply_markup=reply_markup
+                )
+                return
+            except Exception as e:
+                attempt += 1
+                await asyncio.sleep(1)
+        
+        # 兜底通知
+        await send_message_with_retry(bot, user_chat_id, f"❌ {message_type}转发失败，且无法生成快捷按钮，请手动重新发送。")
+
+async def send_message_with_notification(bot, target_chat_id, text, parse_mode, user_chat_id, message_id, message_type="消息"):
     success = await send_message_with_retry(bot, target_chat_id, text, parse_mode)
-    if success:
-        await send_message_with_retry(bot, user_chat_id, f"✅ 您的{message_type}已成功转发到群组！")
-    else:
-        await send_message_with_retry(bot, user_chat_id, f"❌ {message_type}转发失败，请稍后重试")
+    task_data = {'type': 'text', 'text': text, 'parse_mode': parse_mode, 'user_chat_id': user_chat_id, 'message_id': message_id, 'message_type': message_type}
+    await notify_user(bot, user_chat_id, message_id, success, message_type, task_data)
 
-async def send_photo_with_notification(bot, target_chat_id, photo, caption, parse_mode, user_chat_id, message_type="图片"):
+async def send_photo_with_notification(bot, target_chat_id, photo, caption, parse_mode, user_chat_id, message_id, message_type="图片"):
     success = await send_photo_with_retry(bot, target_chat_id, photo, caption, parse_mode)
-    if success:
-        await send_message_with_retry(bot, user_chat_id, f"✅ 您的{message_type}已成功转发到群组！")
-    else:
-        await send_message_with_retry(bot, user_chat_id, f"❌ {message_type}转发失败，请稍后重试")
+    task_data = {'type': 'photo', 'file_id': photo, 'caption': caption, 'parse_mode': parse_mode, 'user_chat_id': user_chat_id, 'message_id': message_id, 'message_type': message_type}
+    await notify_user(bot, user_chat_id, message_id, success, message_type, task_data)
 
-async def send_video_with_notification(bot, target_chat_id, video, caption, parse_mode, user_chat_id, message_type="视频"):
+async def send_video_with_notification(bot, target_chat_id, video, caption, parse_mode, user_chat_id, message_id, message_type="视频"):
     success = await send_video_with_retry(bot, target_chat_id, video, caption, parse_mode)
-    if success:
-        await send_message_with_retry(bot, user_chat_id, f"✅ 您的{message_type}已成功转发到群组！")
-    else:
-        await send_message_with_retry(bot, user_chat_id, f"❌ {message_type}转发失败，请稍后重试")
+    task_data = {'type': 'video', 'file_id': video, 'caption': caption, 'parse_mode': parse_mode, 'user_chat_id': user_chat_id, 'message_id': message_id, 'message_type': message_type}
+    await notify_user(bot, user_chat_id, message_id, success, message_type, task_data)
 
-async def send_document_with_notification(bot, target_chat_id, document, caption, parse_mode, user_chat_id, message_type="文档"):
+async def send_document_with_notification(bot, target_chat_id, document, caption, parse_mode, user_chat_id, message_id, message_type="文档"):
     success = await send_document_with_retry(bot, target_chat_id, document, caption, parse_mode)
-    if success:
-        await send_message_with_retry(bot, user_chat_id, f"✅ 您的{message_type}已成功转发到群组！")
-    else:
-        await send_message_with_retry(bot, user_chat_id, f"❌ {message_type}转发失败，请稍后重试")
+    task_data = {'type': 'document', 'file_id': document, 'caption': caption, 'parse_mode': parse_mode, 'user_chat_id': user_chat_id, 'message_id': message_id, 'message_type': message_type}
+    await notify_user(bot, user_chat_id, message_id, success, message_type, task_data)
 
-async def send_voice_with_notification(bot, target_chat_id, voice, caption, parse_mode, user_chat_id, message_type="语音消息"):
+async def send_voice_with_notification(bot, target_chat_id, voice, caption, parse_mode, user_chat_id, message_id, message_type="语音消息"):
     success = await send_voice_with_retry(bot, target_chat_id, voice, caption, parse_mode)
-    if success:
-        await send_message_with_retry(bot, user_chat_id, f"✅ 您的{message_type}已成功转发到群组！")
-    else:
-        await send_message_with_retry(bot, user_chat_id, f"❌ {message_type}转发失败，请稍后重试")
+    task_data = {'type': 'voice', 'file_id': voice, 'caption': caption, 'parse_mode': parse_mode, 'user_chat_id': user_chat_id, 'message_id': message_id, 'message_type': message_type}
+    await notify_user(bot, user_chat_id, message_id, success, message_type, task_data)
 
-async def send_sticker_with_notification(bot, target_chat_id, sticker, user_chat_id, message_type="贴纸"):
+async def send_sticker_with_notification(bot, target_chat_id, sticker, user_chat_id, message_id, message_type="贴纸"):
     success = await send_sticker_with_retry(bot, target_chat_id, sticker)
-    if success:
-        await send_message_with_retry(bot, user_chat_id, f"✅ 您的{message_type}已成功转发到群组！")
-    else:
-        await send_message_with_retry(bot, user_chat_id, f"❌ {message_type}转发失败，请稍后重试")
+    task_data = {'type': 'sticker', 'file_id': sticker, 'user_chat_id': user_chat_id, 'message_id': message_id, 'message_type': message_type}
+    await notify_user(bot, user_chat_id, message_id, success, message_type, task_data)
 
-async def send_audio_with_notification(bot, target_chat_id, audio, caption, parse_mode, user_chat_id, message_type="音频"):
+async def send_audio_with_notification(bot, target_chat_id, audio, caption, parse_mode, user_chat_id, message_id, message_type="音频"):
     success = await send_audio_with_retry(bot, target_chat_id, audio, caption, parse_mode)
-    if success:
-        await send_message_with_retry(bot, user_chat_id, f"✅ 您的{message_type}已成功转发到群组！")
-    else:
-        await send_message_with_retry(bot, user_chat_id, f"❌ {message_type}转发失败，请稍后重试")
+    task_data = {'type': 'audio', 'file_id': audio, 'caption': caption, 'parse_mode': parse_mode, 'user_chat_id': user_chat_id, 'message_id': message_id, 'message_type': message_type}
+    await notify_user(bot, user_chat_id, message_id, success, message_type, task_data)
 
-async def send_media_group_with_notification(media_group_data, user_chat_id, bot):
+async def send_media_group_with_notification(media_group_data, user_chat_id, message_id, bot):
     success = await send_media_group_to_channel(media_group_data)
-    if success:
-        await send_message_with_retry(bot, user_chat_id, "✅ 您的媒体组消息已成功转发到群组！")
-    else:
-        await send_message_with_retry(bot, user_chat_id, "❌ 媒体组消息转发失败，请稍后重试")
+    task_data = {'type': 'media_group', 'media_group_data': media_group_data, 'user_chat_id': user_chat_id, 'message_id': message_id, 'message_type': '媒体组消息'}
+    await notify_user(bot, user_chat_id, message_id, success, '媒体组消息', task_data)
+
+async def handle_retry_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """处理用户点击重试按钮的内联回调逻辑"""
+    query = update.callback_query
+    data = query.data
+    
+    if data.startswith('retry_'):
+        task_id = data.split('_')[1]
+        if task_id in failed_tasks:
+            task = failed_tasks[task_id]
+            task_type = task['type']
+            message_type = task['message_type']
+            
+            try:
+                await query.edit_message_text(f"🔄 正在重新发送 {message_type}...")
+            except Exception:
+                pass
+            
+            success = False
+            bot = context.bot
+            target = GROUP_CHAT_ID
+            
+            # 分发重试任务
+            if task_type == 'text':
+                success = await send_message_with_retry(bot, target, task['text'], task['parse_mode'])
+            elif task_type == 'photo':
+                success = await send_photo_with_retry(bot, target, task['file_id'], task['caption'], task['parse_mode'])
+            elif task_type == 'video':
+                success = await send_video_with_retry(bot, target, task['file_id'], task['caption'], task['parse_mode'])
+            elif task_type == 'document':
+                success = await send_document_with_retry(bot, target, task['file_id'], task['caption'], task['parse_mode'])
+            elif task_type == 'voice':
+                success = await send_voice_with_retry(bot, target, task['file_id'], task['caption'], task['parse_mode'])
+            elif task_type == 'sticker':
+                success = await send_sticker_with_retry(bot, target, task['file_id'])
+            elif task_type == 'audio':
+                success = await send_audio_with_retry(bot, target, task['file_id'], task['caption'], task['parse_mode'])
+            elif task_type == 'media_group':
+                success = await send_media_group_to_channel(task['media_group_data'])
+            
+            if success:
+                try:
+                    await query.edit_message_text(f"✅ 重试成功！您的{message_type}已成功转发到群组！")
+                except Exception:
+                    pass
+                del failed_tasks[task_id]
+            else:
+                reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔄 再次重试", callback_data=f"retry_{task_id}")]])
+                try:
+                    await query.edit_message_text(f"❌ 依然失败，{message_type}转发异常，请稍后再次重试", reply_markup=reply_markup)
+                except Exception:
+                    pass
+        else:
+            try:
+                await query.edit_message_text("❌ 该重试任务已过期或失效（可能是机器人已重启），请您直接重新发送您的原消息。")
+            except Exception:
+                pass
+        
+        try:
+            await query.answer()
+        except Exception:
+            pass
 
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -1527,7 +1575,7 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     async def get_stats():
-        conn = sqlite3.connect(DATABASE_NAME)
+        conn = sqlite3.connect(DATABASE_NAME, timeout=20)
         cursor = conn.cursor()
         
         cursor.execute("SELECT COUNT(*) FROM user_usage")
@@ -1552,8 +1600,9 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         for i, (username, first_name, last_name, usage_count) in enumerate(top_users, 1):
             display_name = f"{first_name or ''} {last_name or ''}".strip()
+            display_name = html.escape(display_name)
             if username:
-                display_name += f" (@{username})"
+                display_name += f" (@{html.escape(username)})"
             if not display_name.strip():
                 display_name = f"用户 {username}"
             stats_text += f"{i}. {display_name}: {usage_count} 次\n"
@@ -1564,7 +1613,13 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.error(f"机器人错误: {context.error}")
+    error_str = str(context.error)
     
+    # 忽略一些常见瞬间网络错误直接发给管理员，防止刷屏
+    ignore_errors = ["Bad Gateway", "ReadError", "TimedOut", "Timeout", "NetworkError", "httpx", "Connection"]
+    if any(err in error_str for err in ignore_errors):
+        return
+        
     try:
         error_message = f"⚠️ 机器人错误:\n{context.error}"
         await context.bot.send_message(chat_id=ADMIN_USER_ID, text=error_message)
@@ -1574,11 +1629,13 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     init_database()
     
+    # 延长请求池的响应与连接缓冲超时
     request_kwargs = HTTPXRequest(
-        connection_pool_size=8,
-        read_timeout=60.0,
-        write_timeout=60.0,
-        connect_timeout=60.0
+        connection_pool_size=20,
+        read_timeout=120.0,
+        write_timeout=120.0,
+        connect_timeout=60.0,
+        pool_timeout=60.0
     )
 
     application = Application.builder().token(BOT_TOKEN).request(request_kwargs).build()
@@ -1590,6 +1647,9 @@ def main():
     application.add_handler(CommandHandler("banned", banned_command))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("myusage", myusage_command))
+    
+    # 注册回调处理函数（对应重试按钮）
+    application.add_handler(CallbackQueryHandler(handle_retry_callback))
     
     application.add_handler(MessageHandler(
         filters.ChatType.PRIVATE & (
@@ -1609,9 +1669,6 @@ def main():
     
     try:
         application.run_polling(allowed_updates=Update.ALL_TYPES)
-    except httpx.ReadError as e:
-        logger.error(f"网络连接错误: {e}")
-        print("网络连接出现问题，请检查网络后重试")
     except Exception as e:
         logger.error(f"机器人运行错误: {e}")
         print(f"机器人运行错误: {e}")
