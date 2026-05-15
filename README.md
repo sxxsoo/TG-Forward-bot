@@ -52,6 +52,12 @@ curl -O https://raw.githubusercontent.com/sxxsoo/TG-Forward-bot/main/bot_manager
 #2025.11.28 修改配置逻辑，解决关键词清空，增加配置子菜单
 
 
+#2026.4.10 增加重试按钮
+
+
+#2026.5.15 增加多目标转发
+
+
 ## 同步上游（Sync Upstream）
 
 
