@@ -44,11 +44,12 @@ save_config_to_file() {
 
     local channels_py=$(format_python_list "$REQUIRED_CHANNELS")
     local keywords_py=$(format_python_list "$FILTER_KEYWORDS")
+    local targets_py=$(format_python_list "$GROUP_CHAT_ID")
 
     cat > "$CONFIG_FILE" << EOL
 BOT_TOKEN = "$BOT_TOKEN"
 ADMIN_USER_ID = $ADMIN_USER_ID
-GROUP_CHAT_ID = $GROUP_CHAT_ID
+GROUP_CHAT_ID = $targets_py
 REQUIRED_CHANNELS = $channels_py
 FILTER_KEYWORDS = $keywords_py
 SHOW_USERNAME = $SHOW_USERNAME
@@ -63,7 +64,16 @@ read_config() {
     if [ -f "$CONFIG_FILE" ]; then
         BOT_TOKEN=$(grep "BOT_TOKEN" "$CONFIG_FILE" | awk -F'"' '{print $2}')
         ADMIN_USER_ID=$(grep "ADMIN_USER_ID" "$CONFIG_FILE" | awk '{print $3}')
-        GROUP_CHAT_ID=$(grep "GROUP_CHAT_ID" "$CONFIG_FILE" | awk '{print $3}')
+        
+        if grep -q "GROUP_CHAT_ID" "$CONFIG_FILE"; then
+            if grep -q "GROUP_CHAT_ID = \[" "$CONFIG_FILE"; then
+                GROUP_CHAT_ID=$(grep "GROUP_CHAT_ID" "$CONFIG_FILE" | sed 's/.*= \[\([^]]*\)\].*/\1/' | sed "s/'//g; s/ //g")
+            else
+                GROUP_CHAT_ID=$(grep "GROUP_CHAT_ID" "$CONFIG_FILE" | awk '{print $3}')
+            fi
+        else
+            GROUP_CHAT_ID=""
+        fi
         
         if grep -q "REQUIRED_CHANNELS" "$CONFIG_FILE"; then
             REQUIRED_CHANNELS=$(grep "REQUIRED_CHANNELS" "$CONFIG_FILE" | sed 's/.*= \[\([^]]*\)\].*/\1/' | sed "s/'//g; s/ //g")
@@ -140,7 +150,7 @@ configure_bot() {
         echo "------------------------"
         echo "1. BOT_TOKEN:         ${BOT_TOKEN:0:10}***"
         echo "2. ADMIN_USER_ID:     $ADMIN_USER_ID"
-        echo "3. GROUP_CHAT_ID:     $GROUP_CHAT_ID"
+        echo "3. 转发目标群组:      $GROUP_CHAT_ID"
         echo "4. 必填频道:          ${REQUIRED_CHANNELS:-无}"
         echo "5. 过滤关键词:        ${FILTER_KEYWORDS:-无}"
         echo "6. 隐私设置:          (用户名:$SHOW_USERNAME / ID:$SHOW_USER_ID / 时间:$SHOW_TIMESTAMP)"
@@ -169,7 +179,9 @@ configure_bot() {
                 ;;
             3)
                 echo ""
-                read -p "请输入新的 GROUP_CHAT_ID (回车保持不变): " input
+                echo "当前转发目标: ${GROUP_CHAT_ID:-无}"
+                echo "说明: 多个目标ID用逗号分隔"
+                read -p "请输入新的转发目标 ID (回车保持不变): " input
                 if [ -n "$input" ]; then
                     GROUP_CHAT_ID="$input"
                     save_config_to_file
@@ -359,7 +371,7 @@ view_config() {
     echo "=== 当前配置 ==="
     echo "BOT_TOKEN:        ${BOT_TOKEN:0:10}***"
     echo "ADMIN_USER_ID:    $ADMIN_USER_ID"
-    echo "GROUP_CHAT_ID:    $GROUP_CHAT_ID"
+    echo "转发目标群组:     $GROUP_CHAT_ID"
     echo "REQUIRED_CHANNELS: ${REQUIRED_CHANNELS}"
     echo "FILTER_KEYWORDS:   ${FILTER_KEYWORDS}"
     echo "隐私 - 用户名:     $SHOW_USERNAME"
@@ -422,7 +434,7 @@ install_bot() {
     echo "即将使用以下配置安装:"
     echo "BOT_TOKEN: ***"
     echo "ADMIN_USER_ID: $ADMIN_USER_ID"
-    echo "GROUP_CHAT_ID: $GROUP_CHAT_ID"
+    echo "转发目标群组: $GROUP_CHAT_ID"
     echo ""
     
     read -p "确认安装？(y/n): " confirm
@@ -1020,33 +1032,40 @@ async def send_media_group_to_channel(media_group_data):
                 ))
         
         if media_list:
-            attempt = 0
-            max_retries = 5
-            while attempt < max_retries:
-                try:
-                    result = await media_group_data['bot'].send_media_group(
-                        chat_id=GROUP_CHAT_ID,
-                        media=media_list
-                    )
-                    if result:
-                        logger.info(f"成功发送媒体组，包含 {len(media_list)} 个媒体文件 (尝试 {attempt+1})")
-                        return True
-                except Exception as e:
-                    error_str = str(e)
-                    attempt += 1
-                    
-                    if "Flood control" in error_str or "Too Many Requests" in error_str or "Retry in" in error_str:
-                        wait_time_match = re.search(r'Retry in (\d+) seconds', error_str)
-                        wait_time = int(wait_time_match.group(1)) if wait_time_match else 30
-                        logger.warning(f"Flood控制限制，等待 {wait_time} 秒后重试媒体组 (第 {attempt} 次)")
-                        await asyncio.sleep(wait_time)
-                    elif "Bad Gateway" in error_str or "ReadError" in error_str or "TimedOut" in error_str or "Network" in error_str or "Connection" in error_str or "Timeout" in error_str:
-                        logger.warning(f"网络/网关异常 (尝试 {attempt}): {e}")
-                        await asyncio.sleep(RETRY_DELAY * attempt)
-                    else:
-                        logger.warning(f"发送媒体组失败 (尝试 {attempt}): {e}")
-                        await asyncio.sleep(RETRY_DELAY)
-            logger.error("发送媒体组达到最大重试次数")
+            all_success = True
+            for target_id in GROUP_CHAT_ID:
+                attempt = 0
+                max_retries = 5
+                target_success = False
+                while attempt < max_retries:
+                    try:
+                        result = await media_group_data['bot'].send_media_group(
+                            chat_id=target_id,
+                            media=media_list
+                        )
+                        if result:
+                            logger.info(f"成功发送媒体组到 {target_id}，包含 {len(media_list)} 个媒体文件 (尝试 {attempt+1})")
+                            target_success = True
+                            break
+                    except Exception as e:
+                        error_str = str(e)
+                        attempt += 1
+                        
+                        if "Flood control" in error_str or "Too Many Requests" in error_str or "Retry in" in error_str:
+                            wait_time_match = re.search(r'Retry in (\d+) seconds', error_str)
+                            wait_time = int(wait_time_match.group(1)) if wait_time_match else 30
+                            logger.warning(f"Flood控制限制，等待 {wait_time} 秒后重试媒体组 (第 {attempt} 次)")
+                            await asyncio.sleep(wait_time)
+                        elif "Bad Gateway" in error_str or "ReadError" in error_str or "TimedOut" in error_str or "Network" in error_str or "Connection" in error_str or "Timeout" in error_str:
+                            logger.warning(f"网络/网关异常 (尝试 {attempt}): {e}")
+                            await asyncio.sleep(RETRY_DELAY * attempt)
+                        else:
+                            logger.warning(f"发送媒体组失败 (尝试 {attempt}): {e}")
+                            await asyncio.sleep(RETRY_DELAY)
+                if not target_success:
+                    logger.error(f"发送媒体组到 {target_id} 达到最大重试次数")
+                    all_success = False
+            return all_success
     except Exception as e:
         logger.error(f"发送媒体组时出错: {e}")
     return False
@@ -1283,7 +1302,7 @@ async def process_media_group_timer(group_id, chat_id, bot):
         await send_media_group_with_notification(data, chat_id, message_id, bot)
 
 async def handle_private_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.chat.type != "private":
+    if not update.message or update.message.chat.type != "private":
         return
     
     user = update.effective_user
@@ -1465,38 +1484,52 @@ async def notify_user(bot, user_chat_id, message_id, success, message_type, task
         # 兜底通知
         await send_message_with_retry(bot, user_chat_id, f"❌ {message_type}转发失败，且无法生成快捷按钮，请手动重新发送。")
 
-async def send_message_with_notification(bot, target_chat_id, text, parse_mode, user_chat_id, message_id, message_type="消息"):
-    success = await send_message_with_retry(bot, target_chat_id, text, parse_mode)
+async def send_message_with_notification(bot, target_chat_ids, text, parse_mode, user_chat_id, message_id, message_type="消息"):
+    success = True
+    for target_id in target_chat_ids:
+        if not await send_message_with_retry(bot, target_id, text, parse_mode): success = False
     task_data = {'type': 'text', 'text': text, 'parse_mode': parse_mode, 'user_chat_id': user_chat_id, 'message_id': message_id, 'message_type': message_type}
     await notify_user(bot, user_chat_id, message_id, success, message_type, task_data)
 
-async def send_photo_with_notification(bot, target_chat_id, photo, caption, parse_mode, user_chat_id, message_id, message_type="图片"):
-    success = await send_photo_with_retry(bot, target_chat_id, photo, caption, parse_mode)
+async def send_photo_with_notification(bot, target_chat_ids, photo, caption, parse_mode, user_chat_id, message_id, message_type="图片"):
+    success = True
+    for target_id in target_chat_ids:
+        if not await send_photo_with_retry(bot, target_id, photo, caption, parse_mode): success = False
     task_data = {'type': 'photo', 'file_id': photo, 'caption': caption, 'parse_mode': parse_mode, 'user_chat_id': user_chat_id, 'message_id': message_id, 'message_type': message_type}
     await notify_user(bot, user_chat_id, message_id, success, message_type, task_data)
 
-async def send_video_with_notification(bot, target_chat_id, video, caption, parse_mode, user_chat_id, message_id, message_type="视频"):
-    success = await send_video_with_retry(bot, target_chat_id, video, caption, parse_mode)
+async def send_video_with_notification(bot, target_chat_ids, video, caption, parse_mode, user_chat_id, message_id, message_type="视频"):
+    success = True
+    for target_id in target_chat_ids:
+        if not await send_video_with_retry(bot, target_id, video, caption, parse_mode): success = False
     task_data = {'type': 'video', 'file_id': video, 'caption': caption, 'parse_mode': parse_mode, 'user_chat_id': user_chat_id, 'message_id': message_id, 'message_type': message_type}
     await notify_user(bot, user_chat_id, message_id, success, message_type, task_data)
 
-async def send_document_with_notification(bot, target_chat_id, document, caption, parse_mode, user_chat_id, message_id, message_type="文档"):
-    success = await send_document_with_retry(bot, target_chat_id, document, caption, parse_mode)
+async def send_document_with_notification(bot, target_chat_ids, document, caption, parse_mode, user_chat_id, message_id, message_type="文档"):
+    success = True
+    for target_id in target_chat_ids:
+        if not await send_document_with_retry(bot, target_id, document, caption, parse_mode): success = False
     task_data = {'type': 'document', 'file_id': document, 'caption': caption, 'parse_mode': parse_mode, 'user_chat_id': user_chat_id, 'message_id': message_id, 'message_type': message_type}
     await notify_user(bot, user_chat_id, message_id, success, message_type, task_data)
 
-async def send_voice_with_notification(bot, target_chat_id, voice, caption, parse_mode, user_chat_id, message_id, message_type="语音消息"):
-    success = await send_voice_with_retry(bot, target_chat_id, voice, caption, parse_mode)
+async def send_voice_with_notification(bot, target_chat_ids, voice, caption, parse_mode, user_chat_id, message_id, message_type="语音消息"):
+    success = True
+    for target_id in target_chat_ids:
+        if not await send_voice_with_retry(bot, target_id, voice, caption, parse_mode): success = False
     task_data = {'type': 'voice', 'file_id': voice, 'caption': caption, 'parse_mode': parse_mode, 'user_chat_id': user_chat_id, 'message_id': message_id, 'message_type': message_type}
     await notify_user(bot, user_chat_id, message_id, success, message_type, task_data)
 
-async def send_sticker_with_notification(bot, target_chat_id, sticker, user_chat_id, message_id, message_type="贴纸"):
-    success = await send_sticker_with_retry(bot, target_chat_id, sticker)
+async def send_sticker_with_notification(bot, target_chat_ids, sticker, user_chat_id, message_id, message_type="贴纸"):
+    success = True
+    for target_id in target_chat_ids:
+        if not await send_sticker_with_retry(bot, target_id, sticker): success = False
     task_data = {'type': 'sticker', 'file_id': sticker, 'user_chat_id': user_chat_id, 'message_id': message_id, 'message_type': message_type}
     await notify_user(bot, user_chat_id, message_id, success, message_type, task_data)
 
-async def send_audio_with_notification(bot, target_chat_id, audio, caption, parse_mode, user_chat_id, message_id, message_type="音频"):
-    success = await send_audio_with_retry(bot, target_chat_id, audio, caption, parse_mode)
+async def send_audio_with_notification(bot, target_chat_ids, audio, caption, parse_mode, user_chat_id, message_id, message_type="音频"):
+    success = True
+    for target_id in target_chat_ids:
+        if not await send_audio_with_retry(bot, target_id, audio, caption, parse_mode): success = False
     task_data = {'type': 'audio', 'file_id': audio, 'caption': caption, 'parse_mode': parse_mode, 'user_chat_id': user_chat_id, 'message_id': message_id, 'message_type': message_type}
     await notify_user(bot, user_chat_id, message_id, success, message_type, task_data)
 
@@ -1522,27 +1555,31 @@ async def handle_retry_callback(update: Update, context: ContextTypes.DEFAULT_TY
             except Exception:
                 pass
             
-            success = False
+            success = True
             bot = context.bot
-            target = GROUP_CHAT_ID
+            targets = GROUP_CHAT_ID
             
             # 分发重试任务
-            if task_type == 'text':
-                success = await send_message_with_retry(bot, target, task['text'], task['parse_mode'])
-            elif task_type == 'photo':
-                success = await send_photo_with_retry(bot, target, task['file_id'], task['caption'], task['parse_mode'])
-            elif task_type == 'video':
-                success = await send_video_with_retry(bot, target, task['file_id'], task['caption'], task['parse_mode'])
-            elif task_type == 'document':
-                success = await send_document_with_retry(bot, target, task['file_id'], task['caption'], task['parse_mode'])
-            elif task_type == 'voice':
-                success = await send_voice_with_retry(bot, target, task['file_id'], task['caption'], task['parse_mode'])
-            elif task_type == 'sticker':
-                success = await send_sticker_with_retry(bot, target, task['file_id'])
-            elif task_type == 'audio':
-                success = await send_audio_with_retry(bot, target, task['file_id'], task['caption'], task['parse_mode'])
-            elif task_type == 'media_group':
-                success = await send_media_group_to_channel(task['media_group_data'])
+            for target in targets:
+                target_success = False
+                if task_type == 'text':
+                    target_success = await send_message_with_retry(bot, target, task['text'], task['parse_mode'])
+                elif task_type == 'photo':
+                    target_success = await send_photo_with_retry(bot, target, task['file_id'], task['caption'], task['parse_mode'])
+                elif task_type == 'video':
+                    target_success = await send_video_with_retry(bot, target, task['file_id'], task['caption'], task['parse_mode'])
+                elif task_type == 'document':
+                    target_success = await send_document_with_retry(bot, target, task['file_id'], task['caption'], task['parse_mode'])
+                elif task_type == 'voice':
+                    target_success = await send_voice_with_retry(bot, target, task['file_id'], task['caption'], task['parse_mode'])
+                elif task_type == 'sticker':
+                    target_success = await send_sticker_with_retry(bot, target, task['file_id'])
+                elif task_type == 'audio':
+                    target_success = await send_audio_with_retry(bot, target, task['file_id'], task['caption'], task['parse_mode'])
+                elif task_type == 'media_group':
+                    target_success = await send_media_group_to_channel(task['media_group_data'])
+                if not target_success:
+                    success = False
             
             if success:
                 try:
@@ -1652,11 +1689,7 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_retry_callback))
     
     application.add_handler(MessageHandler(
-        filters.ChatType.PRIVATE & (
-            filters.TEXT | filters.PHOTO | filters.VIDEO | 
-            filters.Document.ALL | filters.VOICE | filters.Sticker.ALL |
-            filters.AUDIO
-        ),
+        filters.ChatType.PRIVATE & ~filters.COMMAND,
         handle_private_message
     ))
     
