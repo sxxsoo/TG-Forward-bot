@@ -37,6 +37,23 @@ Script new features:
 
 **2025.11.26** — Fixed forwarding failure but push success due to Telegram API limitations. Added retry sending mechanism.
 
+
+**2025.11.27** Fixed duplicate sending issue:
+
+
+Optimized media group processing
+
+
+Introduced HTTPXRequest,time module
+
+
+**2025.11.28** Modified configuration logic, resolved keyword clearing, added configuration submenu
+
+
+**2026.4.10** Added retry button
+
+
+**2026.5.15** Added multi-target forwarding
 ---
 
 ## Sync Upstream
