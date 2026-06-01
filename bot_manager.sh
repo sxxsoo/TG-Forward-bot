@@ -499,6 +499,15 @@ import re
 from bot_config import BOT_TOKEN, ADMIN_USER_ID, GROUP_CHAT_ID, REQUIRED_CHANNELS, FILTER_KEYWORDS, DATABASE_NAME
 from bot_config import SHOW_USERNAME, SHOW_USER_ID, SHOW_TIMESTAMP
 
+# 自动去重目标群组配置，避免因配置重复导致单次发送产生多条一模一样的消息
+if isinstance(GROUP_CHAT_ID, list):
+    _unique_groups = []
+    for _g in GROUP_CHAT_ID:
+        _g_str = str(_g).strip()
+        if _g_str and _g_str not in _unique_groups:
+            _unique_groups.append(_g_str)
+    GROUP_CHAT_ID = _unique_groups
+
 china_tz = pytz.timezone('Asia/Shanghai')
 
 try:
@@ -1545,8 +1554,11 @@ async def handle_retry_callback(update: Update, context: ContextTypes.DEFAULT_TY
     
     if data.startswith('retry_'):
         task_id = data.split('_')[1]
-        if task_id in failed_tasks:
-            task = failed_tasks[task_id]
+        
+        # 核心防多点逻辑：原子性地从字典中移除并获取任务
+        task = failed_tasks.pop(task_id, None)
+        
+        if task is not None:
             task_type = task['type']
             message_type = task['message_type']
             
@@ -1560,34 +1572,39 @@ async def handle_retry_callback(update: Update, context: ContextTypes.DEFAULT_TY
             targets = GROUP_CHAT_ID
             
             # 分发重试任务
-            for target in targets:
-                target_success = False
-                if task_type == 'text':
-                    target_success = await send_message_with_retry(bot, target, task['text'], task['parse_mode'])
-                elif task_type == 'photo':
-                    target_success = await send_photo_with_retry(bot, target, task['file_id'], task['caption'], task['parse_mode'])
-                elif task_type == 'video':
-                    target_success = await send_video_with_retry(bot, target, task['file_id'], task['caption'], task['parse_mode'])
-                elif task_type == 'document':
-                    target_success = await send_document_with_retry(bot, target, task['file_id'], task['caption'], task['parse_mode'])
-                elif task_type == 'voice':
-                    target_success = await send_voice_with_retry(bot, target, task['file_id'], task['caption'], task['parse_mode'])
-                elif task_type == 'sticker':
-                    target_success = await send_sticker_with_retry(bot, target, task['file_id'])
-                elif task_type == 'audio':
-                    target_success = await send_audio_with_retry(bot, target, task['file_id'], task['caption'], task['parse_mode'])
-                elif task_type == 'media_group':
-                    target_success = await send_media_group_to_channel(task['media_group_data'])
-                if not target_success:
-                    success = False
+            if task_type == 'media_group':
+                # media_group 函数内部已经遍历了所有的 GROUP_CHAT_ID，避免外层重复遍历导致发送多份
+                success = await send_media_group_to_channel(task['media_group_data'])
+            else:
+                for target in targets:
+                    target_success = False
+                    if task_type == 'text':
+                        target_success = await send_message_with_retry(bot, target, task['text'], task['parse_mode'])
+                    elif task_type == 'photo':
+                        target_success = await send_photo_with_retry(bot, target, task['file_id'], task['caption'], task['parse_mode'])
+                    elif task_type == 'video':
+                        target_success = await send_video_with_retry(bot, target, task['file_id'], task['caption'], task['parse_mode'])
+                    elif task_type == 'document':
+                        target_success = await send_document_with_retry(bot, target, task['file_id'], task['caption'], task['parse_mode'])
+                    elif task_type == 'voice':
+                        target_success = await send_voice_with_retry(bot, target, task['file_id'], task['caption'], task['parse_mode'])
+                    elif task_type == 'sticker':
+                        target_success = await send_sticker_with_retry(bot, target, task['file_id'])
+                    elif task_type == 'audio':
+                        target_success = await send_audio_with_retry(bot, target, task['file_id'], task['caption'], task['parse_mode'])
+                    
+                    if not target_success:
+                        success = False
             
             if success:
                 try:
                     await query.edit_message_text(f"✅ 重试成功！您的{message_type}已成功转发到群组！")
                 except Exception:
                     pass
-                del failed_tasks[task_id]
+                # 由于开头已经执行过 pop，成功后不需要在此删除
             else:
+                # 依然失败，把任务重新放回字典，允许下一次重试
+                failed_tasks[task_id] = task
                 reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔄 再次重试", callback_data=f"retry_{task_id}")]])
                 try:
                     await query.edit_message_text(f"❌ 依然失败，{message_type}转发异常，请稍后再次重试", reply_markup=reply_markup)
@@ -1595,7 +1612,9 @@ async def handle_retry_callback(update: Update, context: ContextTypes.DEFAULT_TY
                     pass
         else:
             try:
-                await query.edit_message_text("❌ 该重试任务已过期或失效（可能是机器人已重启），请您直接重新发送您的原消息。")
+                # 任务为空说明已经被点过正在处理或者已经处理完了，或者重启失效
+                await query.answer("❌ 任务正在处理或已失效，请勿重复点击！", show_alert=True)
+                await query.edit_message_text("❌ 该任务正在处理或已失效，请勿重复点击。")
             except Exception:
                 pass
         
